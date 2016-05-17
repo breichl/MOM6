@@ -97,8 +97,11 @@ use user_revise_forcing,     only : user_revise_forcing_CS
 use SCM_idealized_hurricane, only : SCM_idealized_hurricane_wind_init
 use SCM_idealized_hurricane, only : SCM_idealized_hurricane_wind_forcing
 use SCM_idealized_hurricane, only : SCM_idealized_hurricane_CS
-
-use data_override_mod, only : data_override_init, data_override
+use SCM_CVmix_tests,         only : SCM_CVmix_tests_surface_forcing_init
+use SCM_CVmix_tests,         only : SCM_CVmix_tests_wind_forcing
+use SCM_CVmix_tests,         only : SCM_CVmix_tests_buoyancy_forcing
+use SCM_CVmix_tests,         only : SCM_CVmix_tests_CS
+use data_override_mod,       only : data_override_init, data_override
 
 implicit none ; private
 
@@ -208,6 +211,7 @@ type, public :: surface_forcing_CS ; private
   type(user_surface_forcing_CS), pointer :: user_forcing_CSp => NULL()
   type(MESO_surface_forcing_CS), pointer :: MESO_forcing_CSp => NULL()
   type(SCM_idealized_hurricane_CS), pointer :: SCM_idealized_hurricane_CSp => NULL()
+  type(SCM_CVmix_tests_CS),      pointer :: SCM_CVmix_tests_CSp => NULL()
 
 end type surface_forcing_CS
 
@@ -267,6 +271,8 @@ subroutine set_forcing(state, fluxes, day_start, day_interval, G, CS)
       call MESO_wind_forcing(state, fluxes, day_center, G, CS%MESO_forcing_CSp)
     elseif (trim(CS%wind_config) == "SCM_ideal_hurr") then
       call SCM_idealized_hurricane_wind_forcing(state, fluxes, day_center, G, CS%SCM_idealized_hurricane_CSp)
+    elseif (trim(CS%wind_config) == "SCM_CVmix_tests") then
+      call SCM_CVmix_tests_wind_forcing(state, fluxes, day_center, G, CS%SCM_CVmix_tests_CSp)
     elseif (trim(CS%wind_config) == "USER") then
       call USER_wind_forcing(state, fluxes, day_center, G, CS%user_forcing_CSp)
     elseif (CS%variable_winds .and. .not.CS%first_call_set_forcing) then
@@ -318,6 +324,8 @@ subroutine set_forcing(state, fluxes, day_start, day_interval, G, CS)
       call buoyancy_forcing_linear(state, fluxes, day_center, dt, G, CS)
     elseif (trim(CS%buoy_config) == "MESO") then
       call MESO_buoyancy_forcing(state, fluxes, day_center, dt, G, CS%MESO_forcing_CSp)
+    elseif (trim(CS%buoy_config) == "SCM_CVmix_tests") then
+      call SCM_CVmix_tests_buoyancy_forcing(state, fluxes, day_center, G, CS%SCM_CVmix_tests_CSp)
     elseif (trim(CS%buoy_config) == "USER") then
       call USER_buoyancy_forcing(state, fluxes, day_center, dt, G, CS%user_forcing_CSp)
     elseif (trim(CS%buoy_config) == "NONE") then
@@ -1828,6 +1836,10 @@ subroutine surface_forcing_init(Time, G, param_file, diag, CS, tracer_flow_CSp)
     call get_param(param_file, mod, "CONST_WIND_TAUY", CS%tau_y0, &
                  "With wind_config const, this is the constant zonal\n"//&
                  "wind-stress", units="Pa", fail_if_missing=.true.)
+  elseif (trim(CS%wind_config) == "SCM_CVmix_tests" .or. &
+          trim(CS%buoy_config) == "SCM_CVmix_tests") then
+    call SCM_CVmix_tests_surface_forcing_init(Time, G, param_file, CS%SCM_CVmix_tests_CSp)
+    CS%SCM_CVmix_tests_CSp%Rho0 = CS%Rho0 !copy reference density for pass
   endif
 
   call register_forcing_type_diags(Time, diag, CS%use_temperature, CS%handles)
