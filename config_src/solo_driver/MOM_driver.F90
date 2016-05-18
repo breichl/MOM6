@@ -81,6 +81,9 @@ program MOM_main
   use MOM_ice_shelf, only : shelf_calc_flux, ice_shelf_save_restart
 ! , add_shelf_flux_forcing, add_shelf_flux_IOB
 
+  use MOM_wave_interface, only: wave_parameters_CS, MOM_wave_interface_init
+  use MOM_wave_interface, only: Import_Stokes_Drift
+
   implicit none
 
 #include <MOM_memory.h>
@@ -97,6 +100,9 @@ program MOM_main
                                        
   ! If .true., use the ice shelf model for part of the domain.
   logical :: use_ice_shelf
+
+  ! If .true., use wave coupling
+  logical :: use_waves = .false.
 
   ! This is .true. if incremental restart files may be saved.
   logical :: permit_incr_restart = .true. 
@@ -283,6 +289,12 @@ program MOM_main
     call initialize_ice_shelf(param_file, grid, Time, ice_shelf_CSp, MOM_CSp%diag, fluxes)
   endif
 
+  call get_param(param_file,mod,"USE_WAVES",Use_Waves, &
+                 "If true, enables the wave interface.",default=.false.)
+  if (use_waves) then
+    call MOM_wave_interface_init(grid,GV,param_file,MOM_CSp%Wave_Parameter_CSp)
+  endif
+
   call MOM_sum_output_init(grid, param_file, dirs%output_directory, &
                            MOM_CSp%ntrunc, Start_time, sum_output_CSp)
   call MOM_write_cputime_init(param_file, dirs%output_directory, Start_time, &
@@ -413,6 +425,10 @@ program MOM_main
     endif
     fluxes%fluxes_used = .false.
     fluxes%dt_buoy_accum = time_step
+
+    if (use_waves) then
+      call Import_Stokes_Drift(grid,GV,time,time_step_ocean,MOM_CSp%wave_parameter_csp, MOM_CSp%h,FLUXES)
+    endif
 
     if (n==1) then
       call finish_MOM_initialization(Time, dirs, MOM_CSp, fluxes)
