@@ -28,22 +28,35 @@ private
   logical :: UseWaves    !< True to Compute Wave parameters
   logical, public :: LagrangianMixing !If Stokes drift is present and viscous mixing
                               ! should be applied to Lagrangian current
-  logical, public :: WaveEnhancedDiff !If viscosity/diffusivity should be enhanced
-                              ! due to presence of wave modified turbulence
+  logical, public :: LangmuirEnhanceW   !If turbulent velocity scales should be
+                                        ! modified due to presence of Langmuir
+                                        ! mixing.
+  logical, public :: LangmuirEnhanceVt2 !If unresolved turbulent velocity scale
+                                        ! should be modified due to presence
+                                        ! of Langmuir mixing.
+  logical, public :: LangmuirEnhanceK   !If diffusivity/viscosity should be
+                                        ! modified due to presence of Langmuir
+                                        ! mixing
+  logical, public :: StokesShearInRIb   !If Stokes drift should be included
+                                        ! in current shear calculation for
+                                        ! bulk Richardson number.
+  logical, public ::SurfaceStokesInRIb
   integer :: WaveMethod  !< Options for various wave methods
   integer :: SpecMethod  !< Options for various wave spectra
   integer :: NumBands    !< Number of wavenumber bands to recieve
   real ALLOCABLE_, dimension(:) :: WaveNum_Cen !Wavenumber bands for read/coupled
-  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_,NKMEM_), public :: &
+  real ALLOCABLE_, dimension( NIMEM_, NJMEM_,NKMEM_), public :: &
        Us_x ! Stokes drift (zonal) 
-  real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_,NKMEM_), public :: &
+  real ALLOCABLE_, dimension( NIMEM_, NJMEM_,NKMEM_), public :: &
        Us_y ! Stokes drift (meridional) 
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) ::&
+  real ALLOCABLE_, dimension( NIMEM_, NJMEM_) ::&
        LangNum !Langmuir number
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_),public ::     LangEF, OBLdepth
-  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_,:), public :: &
+  real ALLOCABLE_, dimension( NIMEM_, NJMEM_),public ::    &
+       OBLdepth, LangmuirEF_W, LangmuirEF_Vt2, LangmuirEF_K, &
+       US0_x, US0_y, US10pct_x, US10pct_y
+  real ALLOCABLE_, dimension( NIMEMB_, NJMEM_,NKMEM_), public :: &
        STKx0
-  real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_,:), public :: &
+  real ALLOCABLE_, dimension( NIMEM_, NJMEMB_,NKMEM_), public :: &
        STKy0  
 
   logical :: dataoverrideisinitialized
@@ -102,10 +115,23 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
   call get_param(param_file, mod, "LAGRANGIAN_MIXING", CS%LagrangianMixing, &
        "Flag to use Lagrangian Mixing", units="", &
        Default=.false.)
-  call get_param(param_file, mod, "WAVE_ENHANCED_MIXING", CS%WaveEnhancedDiff, &
-       "Flag to use wave enhancement in mixing", units="", &
-       Default=.false.) 
-  if ( (CS%LagrangianMixing.or.CS%WaveEnhancedDiff) .and. (.not.CS%UseWaves)) then
+  call get_param(param_file, mod, "LANGMUIR_ENHANCE_W", CS%LangmuirEnhanceW, &
+       'Flag for Langmuir turbulence enhancement of turbulent'//&
+       'velocity scale.', units="", Default=.false.) 
+  call get_param(param_file, mod, "LANGMUIR_ENHANCE_VT2", CS%LangmuirEnhanceVt2, &
+       'Flag for Langmuir turbulence enhancement of turbulent'//&
+       'velocity scale.', units="", Default=.false.) 
+  call get_param(param_file, mod, "LANGMUIR_ENHANCE_K", CS%LangmuirEnhanceK, &
+       'Flag for Langmuir turbulence enhancement of turbulent'//&
+       'velocity scale.', units="", Default=.false.) 
+ call get_param(param_file, mod, "STOKES_IN_RIB", CS%StokesShearInRIb, &
+       'Flag for using Stokes drift in RIb calculation.'&
+       , units="", Default=.false.) 
+ call get_param(param_file, mod, "SURFACE_STOKES_IN_RIB", CS%SurfaceStokesInRIb, &
+       'Flag for using surface Stokes drift in RIb calculation.'&
+       , units="", Default=.false.) 
+
+  if ( (CS%LagrangianMixing.or.CS%LangmuirEnhanceW) .and. (.not.CS%UseWaves)) then
      call MOM_error(FATAL,"MOM_vert_friction(visc): "// &
           "LagrangianMixing and WaveEnhancedDiff cannot"//&
           "be called without USE_WAVES = .true.")
@@ -155,10 +181,15 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
      ALLOC_ (CS%Us_y(isd:Ied,jsdB:jedB,nz)) ; CS%Us_y(:,:,:) = 0.0
      !    Langmuir number
      ALLOC_ (CS%LangNum(isd:ied,jsd:jed)) ; CS%LangNum(:,:) = 1e10
-     ALLOC_ (CS%LangEF(isd:ied,jsd:jed)) ; CS%LangEF(:,:) = 1.
+     ALLOC_ (CS%LangmuirEF_W(isd:ied,jsd:jed)) ; CS%LangmuirEF_W(:,:) = 1.
+     ALLOC_ (CS%LangmuirEF_Vt2(isd:ied,jsd:jed)) ; CS%LangmuirEF_Vt2(:,:) = 1.
+     ALLOC_ (CS%LangmuirEF_K(isd:ied,jsd:jed)) ; CS%LangmuirEF_K(:,:) = 1.
      ALLOC_ (CS%OBLdepth(isd:ied,jsd:jed)) ; CS%OBLdepth(:,:) = 0.
+     ALLOC_ (CS%US0_x(isd:ied,jsd:jed)) ; CS%US0_x(:,:) = 0.
+     ALLOC_ (CS%US0_y(isd:ied,jsd:jed)) ; CS%US0_y(:,:) = 0.  
+     ALLOC_ (CS%US10pct_x(isd:ied,jsd:jed)) ; CS%US10pct_x(:,:) = 0.
+     ALLOC_ (CS%US10pct_y(isd:ied,jsd:jed)) ; CS%US10pct_y(:,:) = 0. 
   endif
-
   !/BGRTEMP{
   print*,' '
   print*,'-----------------------------------------------'
@@ -193,7 +224,7 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(in) :: h
   type(forcing), intent(in)                             :: FLUXES
   ! local variables
-  real    :: USy20pcnt, USx20pcnt, H20pct
+  real    :: USy20pct, USx20pct, H20pct, H10pct
   real    :: Top, MidPoint, Bottom
   real    :: DecayScale
   type(time_type) :: Day_Center
@@ -236,6 +267,10 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
      call Stokes_Drift_by_data_override(day_center,G,GV,CS)
      CS%Us_x(:,:,:) = 0.0
      CS%Us_y(:,:,:) = 0.0
+     CS%Us0_x(:,:) = 0.0
+     CS%Us0_y(:,:) = 0.0
+     CS%Us10pct_x(:,:) = 0.0
+     CS%Us10pct_y(:,:) = 0.0
      ! ---------------------------------------------------------|
      ! This computes the average Stokes drift based on the      |
      !  analytical integral over the layer divided by the layer |
@@ -243,7 +278,16 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
      ! ---------------------------------------------------------|
      do ii=isdB,iedB
         do jj=jsd,jed
+           H10pct=min(-0.1,-CS%OBLdepth(ii,jj)*0.2);
            bottom = 0.0
+           do b=1,CS%NumBands
+              CS%US0_x(ii,jj)=CS%US0_x(ii,jj) + CS%STKx0(ii,jj,b) *&
+                   (1.0 - EXP(-0.01*2*CS%WaveNum_Cen(b))) / (0.01)/&
+                   (2*CS%WaveNum_Cen(b))
+              CS%US10pct_x(ii,jj)=CS%US10pct_x(ii,jj) + CS%STKx0(ii,jj,b) *&
+                   (1.0 - EXP(H10pct*CS%WaveNum_Cen(b))) /H10pct/&
+                   (2*CS%WaveNum_Cen(b))
+           enddo
            do kk=1, nz
               Top = Bottom
               !****************************************************
@@ -261,7 +305,16 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
      enddo
      do ii=isd,ied
         do jj=jsdB,jedB
-           bottom = 0.0
+           H10pct=min(-0.1,-CS%OBLdepth(ii,jj)*0.2);
+           bottom = 0.0 
+           do b=1,CS%NumBands
+              CS%US0_y(ii,jj)=CS%US0_y(ii,jj) + CS%STKy0(ii,jj,b) *&
+                   (1.0 - EXP(-0.01*2*CS%WaveNum_Cen(b))) / (0.01)/&
+                   (2*CS%WaveNum_Cen(b))
+              CS%US10pct_y(ii,jj)=CS%US10pct_y(ii,jj) + CS%STKy0(ii,jj,b) *&
+                   (1.0 - EXP(H10pct*CS%WaveNum_Cen(b))) /H10pct/&
+                   (2*CS%WaveNum_Cen(b))
+           enddo
            do kk=1, nz
               Top = Bottom
               !****************************************************
@@ -277,26 +330,35 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
            enddo
         enddo
      enddo
+
+
      !At h points for Langmuir number
      do ii=isd,ied
         do jj=jsd,jed
-           USy20pcnt = 0.0;USx20pcnt = 0.0; 
+           USy20pct = 0.0;USx20pct = 0.0; 
            H20pct=min(-0.1,-CS%OBLdepth(ii,jj)*0.2);
            do b=1,CS%NumBands
-              USy20pcnt=USy20pcnt + CS%STKy0(ii,jj,b) *&
+              USy20pct=USy20pct + CS%STKy0(ii,jj,b) *&
                    (1.0 - EXP(H20pct*2*CS%WaveNum_Cen(b))) &
                    / (0.0-H20pct) / (2*CS%WaveNum_Cen(b))
-              USx20pcnt=USx20pcnt + CS%STKx0(ii,jj,b) *&
+              USx20pct=USx20pct + CS%STKx0(ii,jj,b) *&
                    (1.0 - EXP(H20pct*2*CS%WaveNum_Cen(b))) &
                    / (0.0-H20pct) / (2*CS%WaveNum_Cen(b))
            enddo
            CS%LangNum(ii,jj) = sqrt(FLUXES%ustar(ii,jj) / &
-                sqrt(USx20pcnt**2 + USy20pcnt**2))
-           if (CS%WaveEnhancedDiff) then
+                max(1.e-10,sqrt(USx20pct**2 + USy20pct**2)))
+           if (CS%LangmuirEnhanceW) then
               !McWilliams et al., 2000
-              CS%LangEF(ii,jj) = sqrt(1+0.08/CS%LangNum(ii,jj)**4)
-           else
-              CS%LangEF(ii,jj) = 1.0
+              !CS%LangmuirEF_W(ii,jj) = sqrt(1+0.08/CS%LangNum(ii,jj)**4)
+              !VanRoekel et a. 2012
+              CS%LangmuirEF_W(ii,jj) = sqrt(1.+(1.5*CS%LangNum(ii,jj))**(-2) + &
+                                        (5.4*CS%LangNum(ii,jj))**(-4))
+           endif
+           if (CS%LangmuirEnhanceVt2) then
+             CS%LangmuirEF_Vt2(ii,jj) = min(50.,1. + 2.3/sqrt(CS%LangNum(ii,jj)))
+           endif
+           if (CS%LangmuirEnhanceK) then
+             CS%LangmuirEF_K(ii,jj) = min(2.25, 1. + 1./CS%LangNum(ii,jj))
            endif
         enddo
      enddo
@@ -326,7 +388,7 @@ subroutine Stokes_Drift_by_data_override(day_center,G,GV,CS)
   real    :: DecayScale
   integer :: b
   integer :: i, j, is_in, ie_in, js_in, je_in
-  integer :: is, ie, js, je
+  integer :: is, ie, js, je, isd, ied, jsd, jed, isdB, iedB, jsdB, jedB, nz
 
   integer, dimension(4) :: start, count, dims, dim_id 
   character(len=12)  :: dim_name(4)
@@ -336,7 +398,9 @@ subroutine Stokes_Drift_by_data_override(day_center,G,GV,CS)
   ie_in = G%iec - G%isd + 1
   js_in = G%jsc - G%jsd + 1
   je_in = G%jec - G%jsd + 1
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ;
+  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
+  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
+  isdB = G%isdB ; iedB = G%iedB ; jsdB = G%jsdB ; jedB = G%jedB
 
   if (.not.CS%dataOverrideIsInitialized) then
     print*,'into init'
@@ -369,8 +433,8 @@ subroutine Stokes_Drift_by_data_override(day_center,G,GV,CS)
 
     ! Allocating size of wavenumber bins
     ALLOC_ ( CS%WaveNum_Cen(1:id) ) ; CS%WaveNum_Cen(:)=0.0
-    ALLOC_ ( CS%STKx0(is:ie,js:je,1:id)) ; CS%STKx0(:,:,:) = 0.0
-    ALLOC_ ( CS%STKy0(is:ie,js:je,1:id)) ; CS%STKy0(:,:,:) = 0.0
+    ALLOC_ ( CS%STKx0(isdB:iedB,jsdB:jedB,1:id)) ; CS%STKx0(:,:,:) = 0.0
+    ALLOC_ ( CS%STKy0(isdB:iedB,jsdB:jedB,1:id)) ; CS%STKy0(:,:,:) = 0.0
 
     ! Reading wavenumber bins
     start = 1; count = 1; count(1) = id
