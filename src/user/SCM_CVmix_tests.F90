@@ -30,8 +30,10 @@ private
   logical :: UseHeatFlux  !< True to use heat flux
   logical :: UseEvaporation !< True to use evaporation
   logical :: UseDiurnalSW   !< True to use diurnal sw radiation
+  logical :: MechOnly
   real :: tau_x !< (Constant) Wind stress, X (Pa)
   real :: tau_y !< (Constant) Wind stress, Y (Pa)
+  real :: ustar
   real :: surf_HF !< (Constant) Heat flux (m K s^{-1})
   real :: surf_evap !< (Constant) Evaporation rate (m/s)
   real :: Max_sw !< maximum of diurnal sw radiation (m K s^{-1})
@@ -157,6 +159,12 @@ subroutine SCM_CVmix_tests_surface_forcing_init(Time, G, param_file, CS)
                  "used in the SCM CVmix test surface forcing.",       &
                  units='N/m2', fail_if_missing=.true.)
   endif
+   call get_param(param_file, mod, "SCM_MECH_ONLY",              &
+                 CS%MechOnly,                                    &
+                 units='', default=.false.)
+   call get_param(param_file, mod, "SCM_USTAR",               &
+                 CS%ustar,                                    &
+                 units='', default=0.0)
   if (CS%UseHeatFlux) then
     call get_param(param_file, mod, "SCM_HEAT_FLUX",                  &
                  CS%surf_HF, "Constant surface heat flux "//          &
@@ -188,6 +196,11 @@ subroutine SCM_CVmix_tests_wind_forcing(state, fluxes, day, G, CS)
   integer :: i, j, is, ie, js, je, Isq, Ieq, Jsq, Jeq
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
   real    :: mag_tau
+  real :: PI
+
+  PI = 4.0*atan(1.0)
+
+
   ! Bounds for loops and memory allocation
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
@@ -197,16 +210,29 @@ subroutine SCM_CVmix_tests_wind_forcing(state, fluxes, day, G, CS)
   ! Allocate the forcing arrays, if necessary.
   call allocate_forcing_type(G, fluxes, stress=.true., ustar=.true. )
 
-  do j=js,je ; do I=Isq,Ieq
-    fluxes%taux(I,j) = CS%tau_x
-  enddo ; enddo
-  do J=Jsq,Jeq ; do i=is,ie
-    fluxes%tauy(i,J) = CS%tau_y
-  enddo ; enddo
-  mag_tau = sqrt(CS%tau_x*CS%tau_x + CS%tau_y*CS%tau_y)
-  if (associated(fluxes%ustar)) then ; do j=js,je ; do i=is,ie
-    fluxes%ustar(i,j) = sqrt(  mag_tau / CS%Rho0 )
-  enddo ; enddo ; endif
+  if (.not.CS%MechOnly) then
+    do j=js,je ; do I=Isq,Ieq
+      fluxes%taux(I,j) = CS%tau_x
+    enddo ; enddo
+    do J=Jsq,Jeq ; do i=is,ie
+      fluxes%tauy(i,J) = CS%tau_y
+    enddo ; enddo
+    mag_tau = sqrt(CS%tau_x*CS%tau_x + CS%tau_y*CS%tau_y)
+    if (associated(fluxes%ustar)) then ; do j=js,je ; do i=is,ie
+      fluxes%ustar(i,j) = sqrt(  mag_tau / CS%Rho0 )
+    enddo ; enddo ; endif
+  else
+     do j=js,je ; do I=Isq,Ieq
+      fluxes%taux(I,j) = 0.0
+    enddo ; enddo
+    do J=Jsq,Jeq ; do i=is,ie
+      fluxes%tauy(i,J) = 0.0
+    enddo ; enddo
+    mag_tau = sqrt(CS%tau_x*CS%tau_x + CS%tau_y*CS%tau_y)
+    if (associated(fluxes%ustar)) then ; do j=js,je ; do i=is,ie
+      fluxes%ustar(i,j) = CS%ustar
+    enddo ; enddo ; endif 
+  endif
 
 end subroutine SCM_CVmix_tests_wind_forcing
 
