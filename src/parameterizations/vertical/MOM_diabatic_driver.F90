@@ -42,6 +42,8 @@ use MOM_internal_tides,      only : internal_tides_init, internal_tides_end, int
 use MOM_kappa_shear,         only : kappa_shear_is_used
 use MOM_KPP,                 only : KPP_CS, KPP_init, KPP_calculate, KPP_end
 use MOM_KPP,                 only : KPP_NonLocalTransport_temp, KPP_NonLocalTransport_saln
+use MOM_GOTM,                only : GOTM_init, GOTM_calculate
+use MOM_GOTM,                only : GOTM_CS
 use MOM_opacity,             only : opacity_init, set_opacity, opacity_end, opacity_CS
 use MOM_regularize_layers,   only : regularize_layers, regularize_layers_init, regularize_layers_CS
 use MOM_set_diffusivity,     only : set_diffusivity, set_BBL_TKE
@@ -127,6 +129,7 @@ type, public :: diabatic_CS ; private
                                      !! near the bottom, in m2 s-1.
 
   logical :: useKPP                  !< use CVmix/KPP diffusivities and non-local transport
+  logical :: useGOTM                 !< use GOTM diffusivities
   logical :: salt_reject_below_ML    !< If true, add salt below mixed layer (layer mode only)
   logical :: KPPisPassive            !< If true, KPP is in passive mode, not changing answers.
   logical :: useConvection           !< If true, calculate large diffusivities when column
@@ -189,6 +192,7 @@ type, public :: diabatic_CS ; private
   type(optics_type),            pointer :: optics                => NULL()
   type(diag_to_Z_CS),           pointer :: diag_to_Z_CSp         => NULL()
   type(KPP_CS),                 pointer :: KPP_CSp               => NULL()
+  type(GOTM_CS),                pointer :: GOTM_CSp              => NULL()
   type(diffConvection_CS),      pointer :: Conv_CSp              => NULL()
 
   type(group_pass_type) :: pass_hold_eb_ea !< For group halo pass
@@ -602,6 +606,34 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS)
 
   endif  ! endif for KPP
 
+  if (CS%useGOTM) then
+!$OMP parallel default(none) shared(is,ie,js,je,nz,Kd_salt,Kd_int,visc,CS,Kd_heat)
+!$OMP do     
+     do k=1,nz+1 ; do j=js,je ; do i=is,ie
+        Kd_salt(i,j,k) = Kd_int(i,j,k)
+        Kd_heat(i,j,k) = Kd_int(i,j,k)
+     enddo; enddo ; enddo
+     call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_turb )
+!$OMP end parallel
+!$OMP do
+      do k=1,nz+1 ; do j=js,je ; do i=is,ie
+         Kd_int(i,j,k) = min( Kd_salt(i,j,k),  Kd_heat(i,j,k) )
+      enddo ; enddo ; enddo
+      if (associated(visc%Kd_extra_S)) then
+!$OMP do
+        do k=1,nz+1 ; do j=js,je ; do i=is,ie
+          visc%Kd_extra_S(i,j,k) = Kd_salt(i,j,k) - Kd_int(i,j,k)
+        enddo ; enddo ; enddo
+      endif
+      if (associated(visc%Kd_extra_T)) then
+!$OMP do
+        do k=1,nz+1 ; do j=js,je ; do i=is,ie
+          visc%Kd_extra_T(i,j,k) = Kd_heat(i,j,k) - Kd_int(i,j,k)
+        enddo ; enddo ; enddo
+      endif
+  endif
+
   ! Check for static instabilities and increase Kd_int where unstable
   if (CS%useConvection) call diffConvection_calculate(CS%Conv_CSp, &
          G, GV, h, tv%T, tv%S, tv%eqn_of_state, Kd_int)
@@ -646,7 +678,7 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS)
 
     ! increment heat and salt diffusivity.
     ! CS%useKPP==.true. already has extra_T and extra_S included
-    if(.not. CS%useKPP) then
+    if(.not. (CS%useKPP .and. CS%useGOTM)) then
       do K=2,nz ; do j=js,je ; do i=is,ie
         Kd_heat(i,j,K) = Kd_heat(i,j,K) + visc%Kd_extra_T(i,j,K)
         Kd_salt(i,j,K) = Kd_salt(i,j,K) + visc%Kd_extra_S(i,j,K)
@@ -1946,6 +1978,7 @@ subroutine diabatic_driver_init(Time, G, GV, param_file, useALEalgorithm, diag, 
   ! CS%useKPP is set to True if KPP-scheme is to be used, False otherwise.
   ! KPP_init() allocated CS%KPP_Csp and also sets CS%KPPisPassive
   CS%useKPP = KPP_init(param_file, G, diag, Time, CS%KPP_CSp, passive=CS%KPPisPassive)
+  CS%useGOTM = GOTM_init(param_file, G, diag, Time, CS%GOTM_CSp, passive=CS%KPPisPassive)
   if (CS%useKPP) then
     allocate( CS%KPP_NLTheat(isd:ied,jsd:jed,nz+1) )   ; CS%KPP_NLTheat(:,:,:)   = 0.
     allocate( CS%KPP_NLTscalar(isd:ied,jsd:jed,nz+1) ) ; CS%KPP_NLTscalar(:,:,:) = 0.
