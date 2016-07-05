@@ -1555,14 +1555,14 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
 !                   fields.  Allocated here.
 !  (in)      restart_CS - A pointer to the restart control structure.
   type(vardesc) :: vd
-  logical :: use_kappa_shear, adiabatic, useKPP, useEPBL, MLE_use_PBL_MLD
+  logical :: use_kappa_shear, adiabatic, useKPP, useEPBL, MLE_use_PBL_MLD, useGOTM
   integer :: isd, ied, jsd, jed, nz
   character(len=40)  :: mod = "MOM_set_visc"  ! This module's name.
   isd = HI%isd ; ied = HI%ied ; jsd = HI%jsd ; jed = HI%jed ; nz = GV%ke
 
   call get_param(param_file, mod, "ADIABATIC", adiabatic, default=.false., &
                  do_not_log=.true.)
-  use_kappa_shear = .false. ; useKPP = .false. ; useEPBL = .false.
+  use_kappa_shear = .false. ; useKPP = .false. ; useEPBL = .false. ; useGOTM = .false.
   if (.not.adiabatic) then
     use_kappa_shear = kappa_shear_is_used(param_file)
     call get_param(param_file, mod, "USE_KPP", useKPP, &
@@ -1573,9 +1573,13 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
                  "If true, use an implied energetics planetary boundary \n"//&
                  "layer scheme to determine the diffusivity and viscosity \n"//&
                  "in the surface boundary layer.", default=.false., do_not_log=.true.)
+    call get_param(param_File, mod, "USE_GOTM", useGOTM, &
+                 "If true, turns on the GOTM wrapper\n"// &
+                  "to calculate diffusivities. ",     &
+                   default=.false.)
   endif
 
-  if (use_kappa_shear .or. useKPP .or. useEPBL) then
+  if (use_kappa_shear .or. useKPP .or. useEPBL .or. useGOTM) then
     allocate(visc%Kd_turb(isd:ied,jsd:jed,nz+1)) ; visc%Kd_turb(:,:,:) = 0.0
     allocate(visc%TKE_turb(isd:ied,jsd:jed,nz+1)) ; visc%TKE_turb(:,:,:) = 0.0
     allocate(visc%Kv_turb(isd:ied,jsd:jed,nz+1)) ; visc%Kv_turb(:,:,:) = 0.0
