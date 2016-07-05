@@ -76,7 +76,7 @@ subroutine SCM_idealized_hurricane_TS_init(T, S, h, G, GV, param_file)
     do k=1,nz
       eta(K+1) = eta(K) - h(i,j,k)*GV%H_to_m ! Interface below layer (in m)
       zC = 0.5*( eta(K) + eta(K+1) )        ! Z of middle of layer (in m)
-      T(i,j,k) = SST_ref + dTdz*min(0., zC+MLD)
+      T(i,j,k) = max(0.,SST_ref + dTdz*min(0., zC+MLD))
       S(i,j,k) = S_ref
     enddo ! k
   enddo ; enddo
