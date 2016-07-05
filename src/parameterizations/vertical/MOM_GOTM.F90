@@ -13,7 +13,7 @@ use MOM_file_parser,   only : get_param, log_param, log_version, param_file_type
 use MOM_file_parser,   only : openParameterBlock, closeParameterBlock
 use MOM_grid,          only : ocean_grid_type, isPointInCell
 use MOM_verticalGrid,  only : verticalGrid_type
-
+use MOM_wave_interface, only : Wave_parameters_CS
 use turbulence, only : init_turbulence, do_turbulence
 use turbulence, only : G_Kdm=>num, G_Kdt=>nuh, G_Kds=>nus, G_TKE=>tke, G_EPS=>eps
 use turbulence, only : G_l => l, G_cde=>cde
@@ -102,7 +102,7 @@ end function GOTM_init
 
 !> KPP vertical diffusivity/viscosity and non-local tracer transport
 subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
-                          Kt, Ks, Kv)
+                          Kt, Ks, Kv, Waves)
 
   ! Arguments
   type(GOTM_CS),                           pointer       :: CS             !< Control structure
@@ -122,12 +122,17 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
                                                                         !< (out) Vertical diffusivity including KPP (m2/s)
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)+1), intent(inout) :: Kv       !< (in)  Vertical viscosity w/o KPP (m2/s)
                                                                         !< (out) Vertical viscosity including KPP (m2/s)
+  type(Wave_parameters_CS), pointer, optional              :: Waves  !< Surface wave related control structure.
 
   ! Local variables
   integer :: i, j, k, km1, kgotm                 ! Loop indices
   real, dimension( 0:G%ke )   :: H_1d            ! 1-d level thickness in [m] for GOTM
   real, dimension( 0:G%ke )   :: N2_1d           ! Brunt-Vaisala frequency squared, at interfaces (1/s2)
   real, dimension( 0:G%ke )   :: S2_1d           ! Shear frequency at interfaces (1/s2)
+  real, dimension( 0:G%ke )   :: S2x_1d          ! X Shear frequency at interfaces (1/s2)
+  real, dimension( 0:G%ke )   :: S2y_1d          ! Y Shear frequency at interfaces (1/s2)
+  real, dimension( 0:G%ke )   :: S2xStk_1d       ! X Stokes Shear frequency at interfaces (1/s2)
+  real, dimension( 0:G%ke )   :: S2yStk_1d       ! Y Stokes Shear frequency at interfaces (1/s2)
   real, dimension( 0:G%ke, 2) :: Kdiffusivity    ! Vertical diffusivity at interfaces (m2/s)
   real, dimension( 0:G%ke )   :: Kviscosity      ! Vertical viscosity at interfaces (m2/s)
 
@@ -138,8 +143,8 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
   real, dimension( 3*G%ke )   :: Temp_1D
   real, dimension( 3*G%ke )   :: Salt_1D
 
-  real :: GoRho, pRef, Uabove,Ubelow,Vabove,Vbelow
-
+  real :: GoRho, pRef, Uabove,Ubelow,Vabove,Vbelow,&
+          uSabove, uSbelow, vSabove, vSbelow
   real :: delH                 ! Thickness of a layer (m)
   real :: Dpt, DZ
   integer :: kk, ksfc, ktmp
@@ -224,14 +229,31 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
            Ubelow  = 0.5*(u(i,j,km1)+u(i-1,j,km1))
            Vabove  = 0.5*(v(i,j,k)+v(i,j-1,k))
            Vbelow  = 0.5*(v(i,j,km1)+v(i,j-1,km1))
-           
+           if (present(Waves).and.associated(Waves)) then
+              uSabove  = 0.5*(waves%us_x(i,j,k)+waves%us_x(i-1,j,k))
+              uSbelow  = 0.5*(waves%us_x(i,j,km1)+waves%us_x(i-1,j,km1))
+              vSabove  = 0.5*(waves%us_y(i,j,k)+waves%us_y(i,j-1,k))
+              vSbelow  = 0.5*(waves%us_y(i,j,km1)+waves%us_y(i,j-1,km1))
+           else
+              uSabove = 0.0
+              uSbelow = 0.0
+              vSabove = 0.0
+              vSbelow = 0.0
+           endif
            S2_1d(kgotm) = ((Uabove-Ubelow)*(Uabove-Ubelow)  + &
                 (Vabove-Vbelow)*(Vabove-Vbelow)) / (dz*dz)
-           
+           S2x_1d(kgotm) = (Uabove-Ubelow)*(Uabove-Ubelow) / (dz*dz)
+           S2y_1d(kgotm) = (Vabove-Vbelow)*(Vabove-Vbelow) / (dz*dz)
+           S2xStk_1d(kgotm) = 0.0!(uSabove-uSbelow)*(uSabove-vSbelow) / (dz*dz)
+           S2yStk_1d(kgotm) = 0.0!(vSabove-vSbelow)*(vSabove-vSbelow) / (dz*dz)
         enddo
         N2_1d(0) = 0.0
         S2_1d(0) = 0.0
-
+        S2x_1d(0) = 0.0
+        S2y_1d(0) = 0.0
+        S2xStk_1d(0) = 0.0
+        S2yStk_1d(0) = 0.0
+        
       !   GOTM do_turbulence format:
       ! nlev - number of levels
       ! dt   - time step [s]
@@ -243,6 +265,10 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
       ! h - surface thickness array [m]
       ! NN - buoyancy frequency array [1/s2]
       ! SS - shear freuqnecy array [1/s2]
+      ! SSu - shear frequency in x
+      ! SSv - shear frequency in y
+      ! SSuS - Stokes shear frequency in x
+      ! SSvS - Stokes shear frequency in y
       ! xP - TKE production due to [perhaps] seagrass [m2/s3]
       !   subroutine do_turbulence(nlev,dt,depth,u_taus,u_taub,z0s,z0b,h,      &
       !                            NN,SS,xP)
@@ -264,8 +290,11 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
             !print*,S2_1d(kgotm),N2_1d(kgotm)
          endif
         enddo
-      call do_turbulence(G%ke,dt,dpt,ustar(i,j),0.,0.0,0.0,H_1d,N2_1d,S2_1d)
-      !call do_turbulence(G%ke,dt,dpt,0.0,0.,0.0,0.0,H_1d,N2_1d,S2_1d)
+      !Original GOTM do_turbulence
+      !call do_turbulence(G%ke,dt,dpt,ustar(i,j),0.,0.0,0.0,H_1d,N2_1d,S2_1d)
+      !Modified GOTM do_turbulence for including wave impacts.
+        call do_turbulence(G%ke,dt,dpt,ustar(i,j),0.,0.0,0.0,H_1d,N2_1d,S2_1d,&
+                           S2x_1d,S2y_1d,S2xStk_1d,S2yStk_1d) 
       do k=1,G%ke+1
          kgotm=G%ke-k+1
          !Fill MOM arrays from GOTM
