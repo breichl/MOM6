@@ -45,9 +45,9 @@ private
   integer :: SpecMethod  !< Options for various wave spectra
   integer :: NumBands    !< Number of wavenumber bands to recieve
   real ALLOCABLE_, dimension(:) :: WaveNum_Cen !Wavenumber bands for read/coupled
-  real ALLOCABLE_, dimension( NIMEM_, NJMEM_,NKMEM_), public :: &
+  real ALLOCABLE_, dimension( NIMEMB_, NJMEM_,NKMEM_), public :: &
        Us_x ! Stokes drift (zonal) 
-  real ALLOCABLE_, dimension( NIMEM_, NJMEM_,NKMEM_), public :: &
+  real ALLOCABLE_, dimension( NIMEM_, NJMEMB_,NKMEM_), public :: &
        Us_y ! Stokes drift (meridional) 
   real ALLOCABLE_, dimension( NIMEM_, NJMEM_) ::&
        LangNum !Langmuir number
@@ -85,7 +85,6 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
   type(param_file_type),                  intent(in)  :: param_file !< Input parameter structure
   type(wave_parameters_CS),              pointer     :: CS
   ! Local variables
-  integer :: is, ie, js, je, isd, ied, jsd, jed, isdB, iedB, jsdB, jedB, nz
 
   ! I/O
   character*(13) :: TMPSTRING1,TMPSTRING2
@@ -95,9 +94,7 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
   character*(13), parameter :: DATAOVERRIDE_STRING = "DATA_OVERRIDE"
   character*(10), parameter :: TESTPROF_STRING = "TEST_PROF"
   character*(10), parameter :: ELF97_STRING = "ELF97"
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
-  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
-  isdB = G%isdB ; iedB = G%iedB ; jsdB = G%jsdB ; jedB = G%jedB
+
   if (associated(CS)) then
      call MOM_error(WARNING, "wave_interface_init called with an associated"//&
                              "control structure.")
@@ -177,18 +174,18 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
      endselect
      ! 2. Allocate and initialize
      !    Stokes drift
-     ALLOC_ (CS%Us_x(isdB:IedB,jsd:jed,nz)) ; CS%Us_x(:,:,:) = 0.0
-     ALLOC_ (CS%Us_y(isd:Ied,jsdB:jedB,nz)) ; CS%Us_y(:,:,:) = 0.0
+     ALLOC_ (CS%Us_x(G%isdB:G%IedB,G%jsd:G%jed,G%ke)) ; CS%Us_x(:,:,:) = 0.0
+     ALLOC_ (CS%Us_y(G%isd:G%Ied,G%jsdB:G%jedB,G%ke)) ; CS%Us_y(:,:,:) = 0.0
      !    Langmuir number
-     ALLOC_ (CS%LangNum(isd:ied,jsd:jed)) ; CS%LangNum(:,:) = 1e10
-     ALLOC_ (CS%LangmuirEF_W(isd:ied,jsd:jed)) ; CS%LangmuirEF_W(:,:) = 1.
-     ALLOC_ (CS%LangmuirEF_Vt2(isd:ied,jsd:jed)) ; CS%LangmuirEF_Vt2(:,:) = 1.
-     ALLOC_ (CS%LangmuirEF_K(isd:ied,jsd:jed)) ; CS%LangmuirEF_K(:,:) = 1.
-     ALLOC_ (CS%OBLdepth(isd:ied,jsd:jed)) ; CS%OBLdepth(:,:) = 0.
-     ALLOC_ (CS%US0_x(isd:ied,jsd:jed)) ; CS%US0_x(:,:) = 0.
-     ALLOC_ (CS%US0_y(isd:ied,jsd:jed)) ; CS%US0_y(:,:) = 0.  
-     ALLOC_ (CS%US10pct_x(isd:ied,jsd:jed)) ; CS%US10pct_x(:,:) = 0.
-     ALLOC_ (CS%US10pct_y(isd:ied,jsd:jed)) ; CS%US10pct_y(:,:) = 0. 
+     ALLOC_ (CS%LangNum(G%isc:G%iec,G%jsc:G%jec)) ; CS%LangNum(:,:) = 1e10
+     ALLOC_ (CS%LangmuirEF_W(G%isc:G%iec,G%jsc:G%jec)) ; CS%LangmuirEF_W(:,:) = 1.
+     ALLOC_ (CS%LangmuirEF_Vt2(G%isc:G%iec,G%jsc:G%jec)) ; CS%LangmuirEF_Vt2(:,:) = 1.
+     ALLOC_ (CS%LangmuirEF_K(G%isc:G%iec,G%jsc:G%jec)) ; CS%LangmuirEF_K(:,:) = 1.
+     ALLOC_ (CS%OBLdepth(G%isc:G%iec,G%jsc:G%jec)) ; CS%OBLdepth(:,:) = 0.
+     ALLOC_ (CS%US0_x(G%isdB:G%iedB,G%jsd:G%jed)) ; CS%US0_x(:,:) = 0.
+     ALLOC_ (CS%US0_y(G%isd:G%ied,G%jsdB:G%jedB)) ; CS%US0_y(:,:) = 0.  
+     ALLOC_ (CS%US10pct_x(G%isdB:G%iedB,G%jsd:G%jed)) ; CS%US10pct_x(:,:) = 0.
+     ALLOC_ (CS%US10pct_y(G%isd:G%ied,G%jsdB:G%jedB)) ; CS%US10pct_y(:,:) = 0. 
   endif
   !/BGRTEMP{
   print*,' '
@@ -228,11 +225,7 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
   real    :: Top, MidPoint, Bottom
   real    :: DecayScale
   type(time_type) :: Day_Center
-  integer :: ii, jj, kk, b
-  integer :: is, ie, js, je, isd, ied, jsd, jed, isdB, iedB, jsdB, jedB, nz
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
-  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
-  isdB = G%isdB ; iedB = G%iedB ; jsdB = G%jsdB ; jedB = G%jedB
+  integer :: ii, jj, kk, b, iim1, jjm1
 
   Day_Center = Day + DT/2
 
@@ -245,55 +238,50 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
      Bottom = 0.0
      MidPoint = 0.0
      !print*,'DecayScale:',TP_WVL,TP_STKX0,TP_STKY0
-     do kk=1, nz
+     do kk=1, G%ke
         Top = Bottom
         !****************************************************
         !NOTE THIS H WILL NOT BE CORRECT FOR NON-UNIFORM GRID
         MidPoint = Bottom - GV%H_to_m * h(1,1,kk)/2.
         Bottom = Bottom - GV%H_to_m * h(1,1,kk)
-        do ii=isdB,iedB
-           do jj=jsd,jed
+        do ii=G%isdB,G%iedB
+           do jj=G%jsd,G%jed
               CS%Us_x(ii,jj,kk) = TP_STKX0 * EXP(MIDPOINT*DecayScale)
            enddo
         enddo
-        do ii=isd,ied
-           do jj=jsdB,jedB
+        do ii=G%isd,G%ied
+           do jj=G%jsdB,G%jedB
               CS%Us_y(ii,jj,kk) = TP_STKY0 * EXP(MIDPOINT*DecayScale)
            enddo
         enddo
         !print*,MIDPOINT,CS%US_x(1,1,kk),CS%Us_y(1,1,kk)
      enddo     
   elseif (CS%WaveMethod==DATAOVERRIDE) then
-     call Stokes_Drift_by_data_override(day_center,G,GV,CS)
-     CS%Us_x(:,:,:) = 0.0
-     CS%Us_y(:,:,:) = 0.0
-     CS%Us0_x(:,:) = 0.0
-     CS%Us0_y(:,:) = 0.0
-     CS%Us10pct_x(:,:) = 0.0
-     CS%Us10pct_y(:,:) = 0.0
+       call Stokes_Drift_by_data_override(day_center,G,GV,CS)
+       CS%Us_x(:,:,:) = 0.0
+       CS%Us_y(:,:,:) = 0.0
+       CS%Us0_x(:,:) = 0.0
+       CS%Us0_y(:,:) = 0.0
+       CS%Us10pct_x(:,:) = 0.0
+       CS%Us10pct_y(:,:) = 0.0
      ! ---------------------------------------------------------|
      ! This computes the average Stokes drift based on the      |
      !  analytical integral over the layer divided by the layer |
      !  thickness.                                              |
      ! ---------------------------------------------------------|
-     do ii=isdB,iedB
-        do jj=jsd,jed
-           H10pct=min(-0.1,-CS%OBLdepth(ii,jj)*0.2);
-           bottom = 0.0
+     do ii=G%isdB,G%iedB
+        do jj=G%jsd,G%jed
            do b=1,CS%NumBands
               CS%US0_x(ii,jj)=CS%US0_x(ii,jj) + CS%STKx0(ii,jj,b) *&
                    (1.0 - EXP(-0.01*2*CS%WaveNum_Cen(b))) / (0.01)/&
                    (2*CS%WaveNum_Cen(b))
-              CS%US10pct_x(ii,jj)=CS%US10pct_x(ii,jj) + CS%STKx0(ii,jj,b) *&
-                   (1.0 - EXP(H10pct*CS%WaveNum_Cen(b))) /H10pct/&
-                   (2*CS%WaveNum_Cen(b))
            enddo
-           do kk=1, nz
+           bottom = 0.0
+           do kk=1, G%ke
               Top = Bottom
-              !****************************************************
-              !NOTE THIS H WILL NOT BE CORRECT FOR NON-UNIFORM GRID
-              MidPoint = Bottom - GV%H_to_m * h(ii,jj,kk)/2.
-              Bottom = Bottom - GV%H_to_m * h(ii,jj,kk)
+              iim1 = max(ii-1,1)
+              MidPoint = Bottom - GV%H_to_m * (h(ii,jj,kk)+h(iim1,jj,kk))/4.
+              Bottom = Bottom - GV%H_to_m *  (h(ii,jj,kk)+h(iim1,jj,kk))/2.
               do b=1,CS%NumBands
                  CS%US_x(ii,jj,kk)=CS%US_x(ii,jj,kk) + CS%STKx0(ii,jj,b) *&
                       (EXP(TOP*2*CS%WaveNum_Cen(b))- &
@@ -303,45 +291,67 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
            enddo
         enddo
      enddo
-     do ii=isd,ied
-        do jj=jsdB,jedB
+     do ii=G%iscB,G%iecB
+        do jj=G%jsc,G%jec
            H10pct=min(-0.1,-CS%OBLdepth(ii,jj)*0.2);
-           bottom = 0.0 
+           bottom = 0.0
+           do b=1,CS%NumBands
+              CS%US10pct_x(ii,jj)=CS%US10pct_x(ii,jj) + &
+                   0.5*(CS%STKx0(ii,jj,b)+CS%STKx0(ii-1,jj,b)) *&
+                   (1.0 - EXP(H10pct*CS%WaveNum_Cen(b))) /H10pct/&
+                   (2*CS%WaveNum_Cen(b))
+           enddo
+        enddo
+     enddo
+
+     do ii=G%isd,G%ied
+        do jj=G%jsdB,G%jedB
            do b=1,CS%NumBands
               CS%US0_y(ii,jj)=CS%US0_y(ii,jj) + CS%STKy0(ii,jj,b) *&
                    (1.0 - EXP(-0.01*2*CS%WaveNum_Cen(b))) / (0.01)/&
                    (2*CS%WaveNum_Cen(b))
-              CS%US10pct_y(ii,jj)=CS%US10pct_y(ii,jj) + CS%STKy0(ii,jj,b) *&
-                   (1.0 - EXP(H10pct*CS%WaveNum_Cen(b))) /H10pct/&
-                   (2*CS%WaveNum_Cen(b))
            enddo
-           do kk=1, nz
+           bottom = 0.0
+           do kk=1, G%ke
               Top = Bottom
-              !****************************************************
-              !NOTE THIS H WILL NOT BE CORRECT FOR NON-UNIFORM GRID
-              MidPoint = Bottom - GV%H_to_m * h(ii,jj,kk)/2.
-              Bottom = Bottom - GV%H_to_m * h(ii,jj,kk)
+              jjm1 = max(jj-1,1)
+              MidPoint = Bottom - GV%H_to_m * (h(ii,jj,kk)+h(ii,jjm1,kk))/4.
+              Bottom = Bottom - GV%H_to_m *  (h(ii,jj,kk)+h(ii,jjm1,kk))/2.
               do b=1,CS%NumBands
-                 CS%US_y(ii,jj,kk)=CS%US_Y(ii,jj,kk) + CS%STKy0(ii,jj,b) *&
+                 CS%US_y(ii,jj,kk)=CS%US_y(ii,jj,kk) + CS%STKy0(ii,jj,b) *&
                       (EXP(TOP*2*CS%WaveNum_Cen(b))- &
-                       EXP(BOTTOM*2*CS%WaveNum_Cen(b))) / (Top-Bottom) /&
+                      EXP(BOTTOM*2*CS%WaveNum_Cen(b))) / (Top-Bottom)/&
                        (2*CS%WaveNum_Cen(b))
               enddo
+           enddo
+        enddo
+     enddo
+     do ii=G%isc,G%iec
+        do jj=G%jscB,G%jecB
+           H10pct=min(-0.1,-CS%OBLdepth(ii,jj)*0.2);
+           bottom = 0.0
+           do b=1,CS%NumBands
+              CS%US10pct_y(ii,jj)=CS%US10pct_y(ii,jj) + &
+                   0.5*(CS%STKy0(ii,jj,b)+CS%STKy0(ii,jj-1,b)) *&
+                   (1.0 - EXP(H10pct*CS%WaveNum_Cen(b))) /H10pct/&
+                   (2*CS%WaveNum_Cen(b))
            enddo
         enddo
      enddo
 
 
      !At h points for Langmuir number
-     do ii=isd,ied
-        do jj=jsd,jed
+     do ii=G%isc,G%iec
+        do jj=G%jsc,G%jec
            USy20pct = 0.0;USx20pct = 0.0; 
            H20pct=min(-0.1,-CS%OBLdepth(ii,jj)*0.2);
            do b=1,CS%NumBands
-              USy20pct=USy20pct + CS%STKy0(ii,jj,b) *&
+              USy20pct=USy20pct + &
+                   0.5*(CS%STKy0(ii,jj,b)+CS%STKy0(ii,jj-1,b)) *&
                    (1.0 - EXP(H20pct*2*CS%WaveNum_Cen(b))) &
                    / (0.0-H20pct) / (2*CS%WaveNum_Cen(b))
-              USx20pct=USx20pct + CS%STKx0(ii,jj,b) *&
+              USx20pct=USx20pct + &
+                   0.5*(CS%STKx0(ii,jj,b)+CS%STKx0(ii-1,jj,b)) *&
                    (1.0 - EXP(H20pct*2*CS%WaveNum_Cen(b))) &
                    / (0.0-H20pct) / (2*CS%WaveNum_Cen(b))
            enddo
@@ -363,13 +373,13 @@ subroutine Import_Stokes_Drift(G,GV,Day,DT,CS,h,FLUXES)
         enddo
      enddo
   else!Keep this else, fallback to 0 Stokes drift
-     do ii=isdB,iedB
-           do jj=jsd,jed
+     do ii=G%isdB,G%iedB
+           do jj=G%jsd,G%jed
               CS%Us_x(ii,jj,kk) = 0
            enddo
         enddo
-        do ii=isd,ied
-           do jj=jsdB,jedB
+        do ii=G%isd,G%ied
+           do jj=G%jsdB,G%jedB
               CS%Us_y(ii,jj,kk) = 0
            enddo
         enddo
@@ -387,20 +397,12 @@ subroutine Stokes_Drift_by_data_override(day_center,G,GV,CS)
   real    :: Top, MidPoint, Bottom
   real    :: DecayScale
   integer :: b
-  integer :: i, j, is_in, ie_in, js_in, je_in
-  integer :: is, ie, js, je, isd, ied, jsd, jed, isdB, iedB, jsdB, jedB, nz
+  integer :: i, j
 
   integer, dimension(4) :: start, count, dims, dim_id 
   character(len=12)  :: dim_name(4)
   character(20) :: varname, filename, varread
   integer :: rcode, ncid, varid, id, ndims
-  is_in = G%isc - G%isd + 1
-  ie_in = G%iec - G%isd + 1
-  js_in = G%jsc - G%jsd + 1
-  je_in = G%jec - G%jsd + 1
-  is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
-  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
-  isdB = G%isdB ; iedB = G%iedB ; jsdB = G%jsdB ; jedB = G%jedB
 
   if (.not.CS%dataOverrideIsInitialized) then
     print*,'into init'
@@ -433,8 +435,8 @@ subroutine Stokes_Drift_by_data_override(day_center,G,GV,CS)
 
     ! Allocating size of wavenumber bins
     ALLOC_ ( CS%WaveNum_Cen(1:id) ) ; CS%WaveNum_Cen(:)=0.0
-    ALLOC_ ( CS%STKx0(isdB:iedB,jsdB:jedB,1:id)) ; CS%STKx0(:,:,:) = 0.0
-    ALLOC_ ( CS%STKy0(isdB:iedB,jsdB:jedB,1:id)) ; CS%STKy0(:,:,:) = 0.0
+    ALLOC_ ( CS%STKx0(G%isdB:G%iedB,G%jsd:G%jed,1:id)) ; CS%STKx0(:,:,:) = 0.0
+    ALLOC_ ( CS%STKy0(G%isd:G%ied,G%jsdB:G%jedB,1:id)) ; CS%STKy0(:,:,:) = 0.0
 
     ! Reading wavenumber bins
     start = 1; count = 1; count(1) = id
@@ -449,20 +451,34 @@ subroutine Stokes_Drift_by_data_override(day_center,G,GV,CS)
     print*,'End of NetCDF Read'
   endif
   
-  !BGR simplified to only reading 1 band for first test.
   do b=1,CS%NumBands
-     !print*,b
-     !print*,'**********'
      varname = '                    '
      write(varname,"(A3,I0)")'Usx',b
      call data_override('OCN',trim(varname), CS%STKx0(:,:,b), day_center)
      varname = '                    '
      write(varname,'(A3,I0)')'Usy',b
      call data_override('OCN',trim(varname), CS%STKy0(:,:,b), day_center)     
-     !print*,(CS%STKx0(:,:,b))
-     !print*,(CS%STKy0(:,:,b))
   enddo
-
+  
+  !Brandon: Hacking to update HALO until properly resolved
+  do i=G%isdB,G%iedB
+     do j=G%isd,G%ied
+        if (i.lt.G%iscB) then
+           CS%STKX0(i,j,:)=CS%STKX0(G%iscB,j,:)
+        elseif (i.gt.G%iecB) then
+           CS%STKX0(i,j,:)=CS%STKX0(G%iecB,j,:)
+        endif
+     enddo
+  enddo
+  do i=G%isd,G%ied
+     do j=G%isdB,G%iedB
+        if (j.lt.G%jscB) then
+           CS%STKY0(i,j,:)=CS%STKY0(i,G%iscB,:)
+        elseif (j.gt.G%jecB) then
+           CS%STKY0(i,j,:)=CS%STKY0(i,G%jecB,:)
+        endif
+     enddo
+  enddo
   
   !print*,' '
   !print*,'-------------------------------------'

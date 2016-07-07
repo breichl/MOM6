@@ -15,8 +15,8 @@ use MOM_grid,          only : ocean_grid_type, isPointInCell
 use MOM_verticalGrid,  only : verticalGrid_type
 use MOM_wave_interface, only : Wave_parameters_CS
 use turbulence, only : init_turbulence, do_turbulence
-use turbulence, only : G_Kdm=>num, G_Kdt=>nuh, G_Kds=>nus, G_TKE=>tke, G_EPS=>eps
-use turbulence, only : G_l => l, G_cde=>cde
+use turbulence, only : G_Kdm=>num, G_Kdt=>nuh, G_Kds=>nus, G_TKE=>tke, G_EPS=>eps, G_TKEo =>tkeo
+use turbulence, only : G_l => l, G_cde=>cde, g_k_min=>k_min, g_eps_min=>eps_min
 use mtridiagonal, only: init_tridiagonal
 implicit none ; private
 
@@ -37,8 +37,8 @@ type, public :: GOTM_CS ; private
   real    :: vonKarman                 !< von Karman constant (dimensionless)
   logical :: debug
 
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: TKE
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: EPS
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: TKE, TKEo
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: EPS, LenScale
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KV
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KT
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KS
@@ -87,15 +87,18 @@ logical function GOTM_init(paramFile, G, diag, Time, CS, passive)
                  default=.false.)
   ! Forego remainder of initialization if not using this scheme
   if (.not. GOTM_init) return
+  call init_turbulence (namlst,'gotmturb.nml',G%Ke)
+  call init_tridiagonal (G%Ke)
   !allocation on grid center of computational domain indices
-  ALLOC_ (CS%TKE(is:Ie,js:je,nz+1)) ; CS%TKE(:,:,:) = 0.0
-  ALLOC_ (CS%EPS(is:Ie,js:je,nz+1)) ; CS%EPS(:,:,:) = 0.0
+  ALLOC_ (CS%TKE(is:Ie,js:je,nz+1)) ; CS%TKE(:,:,:) = g_k_min
+  ALLOC_ (CS%TKEo(is:Ie,js:je,nz+1)) ; CS%TKEo(:,:,:) = g_k_min
+  ALLOC_ (CS%EPS(is:Ie,js:je,nz+1)) ; CS%EPS(:,:,:) = g_eps_min
+  ALLOC_ (CS%LenScale(is:Ie,js:je,nz+1)) ; CS%LenScale(:,:,:) = g_cde*g_k_min**1.5/g_eps_min
+  
   ALLOC_ (CS%KV(is:Ie,js:je,nz+1)) ; CS%KV(:,:,:) = 1.E-6
   ALLOC_ (CS%KS(is:Ie,js:je,nz+1)) ; CS%KS(:,:,:) = 1.E-6
   ALLOC_ (CS%KT(is:Ie,js:je,nz+1)) ; CS%KT(:,:,:) = 1.E-6
 
-  call init_turbulence (namlst,'gotmturb.nml',G%Ke)
-  call init_tridiagonal (G%Ke)
 end function GOTM_init
 
 
@@ -147,6 +150,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
           uSabove, uSbelow, vSabove, vSbelow
   real :: delH                 ! Thickness of a layer (m)
   real :: Dpt, DZ
+  real :: Z0S
   integer :: kk, ksfc, ktmp
   logical, save :: first=.true.
 
@@ -244,8 +248,8 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
                 (Vabove-Vbelow)*(Vabove-Vbelow)) / (dz*dz)
            S2x_1d(kgotm) = (Uabove-Ubelow)*(Uabove-Ubelow) / (dz*dz)
            S2y_1d(kgotm) = (Vabove-Vbelow)*(Vabove-Vbelow) / (dz*dz)
-           S2xStk_1d(kgotm) = 0.0!(uSabove-uSbelow)*(uSabove-vSbelow) / (dz*dz)
-           S2yStk_1d(kgotm) = 0.0!(vSabove-vSbelow)*(vSabove-vSbelow) / (dz*dz)
+           S2xStk_1d(kgotm) = (uSabove-uSbelow)*(uSabove-uSbelow) / (dz*dz)
+           S2yStk_1d(kgotm) = (vSabove-vSbelow)*(vSabove-vSbelow) / (dz*dz)
         enddo
         N2_1d(0) = 0.0
         S2_1d(0) = 0.0
@@ -276,24 +280,24 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
         do k=1,G%ke+1
            kgotm=G%ke-k+1
            !Fill GOTM arrays for time stepping
-           if (.not.first) then
-              g_Kdm(kgotm) = CS%Kv(i,j,k)
-              g_Kdt(kgotm) = CS%Kt(i,j,k)
-              g_Kds(kgotm) = CS%Ks(i,j,k)
-              g_TKE(kgotm) = CS%TKE(i,j,k)
-              g_EPS(kgotm) = CS%EPS(i,j,k)
-              g_l(kgotm)   = g_cde*g_tke(kgotm)**1.5/g_eps(kgotm)
-           endif
-           if (k.lt.10) then
-            !print*,k,'in----------'
-            !print*,g_kdm(kgotm),g_Kdt(kgotm),g_Kds(kgotm)
-            !print*,S2_1d(kgotm),N2_1d(kgotm)
-         endif
+           g_TKE(kgotm) = CS%TKE(i,j,k)
+           g_TKEo(kgotm) = CS%TKEo(i,j,k)
+           g_EPS(kgotm) = CS%EPS(i,j,k)
+           g_Kdm(kgotm) = CS%Kv(i,j,k)
+           g_Kdt(kgotm) = CS%Kt(i,j,k)
+           g_Kds(kgotm) = CS%Ks(i,j,k)
+           g_l(kgotm)   = CS%LenScale(i,j,k)
+           !if (k.lt.10) then
+           ! print*,k,'in----------'
+           ! print*,g_kdm(kgotm),g_Kdt(kgotm),g_Kds(kgotm)
+           ! print*,S2_1d(kgotm),N2_1d(kgotm)
+           !endif
         enddo
       !Original GOTM do_turbulence
       !call do_turbulence(G%ke,dt,dpt,ustar(i,j),0.,0.0,0.0,H_1d,N2_1d,S2_1d)
       !Modified GOTM do_turbulence for including wave impacts.
-        call do_turbulence(G%ke,dt,dpt,ustar(i,j),0.,0.0,0.0,H_1d,N2_1d,S2_1d,&
+        z0s=0.02
+        call do_turbulence(G%ke,dt,dpt,ustar(i,j),0.,z0s,0.0,H_1d,N2_1d,S2_1d,&
                            S2x_1d,S2y_1d,S2xStk_1d,S2yStk_1d) 
       do k=1,G%ke+1
          kgotm=G%ke-k+1
@@ -309,12 +313,20 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
          Kv(i,j,k) = g_Kdm(kgotm) 
          Kt(i,j,k) = g_Kdt(kgotm) 
          Ks(i,j,k) = g_Kds(kgotm)
+         CS%TKEo(i,j,k) = CS%TKE(i,j,k)
          CS%TKE(i,j,k) = g_TKE(kgotm)
          CS%EPS(i,j,k) = g_EPS(kgotm)
+         CS%LenScale(i,j,k) = g_L(kgotm)
       enddo
     enddo ! i
   enddo ! j
-
+  
+  ! do i=3,4
+  !    do j=3,4
+  !       print*,i,j,'-----'
+  !       print*,u(i,j,1),u(i,j,2)
+  !    enddo
+  ! enddo
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then
 !    call hchksum(Ks, "KPP out: Ks",G,haloshift=0)
