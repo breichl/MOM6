@@ -73,13 +73,13 @@
    REALTYPE, public, dimension(:), allocatable   :: gamb,gamh,gams
 
 !  non-dimensional  stability functions
-   REALTYPE, public, dimension(:), allocatable   :: cmue1,cmue2
+   REALTYPE, public, dimension(:), allocatable   :: cmue1,cmue2,cmue3
 
 !  non-dimensional counter-gradient term
    REALTYPE, public, dimension(:), allocatable   :: gam
 
 !  alpha_M, alpha_N, and alpha_B
-   REALTYPE, public, dimension(:), allocatable   :: as,an,at
+   REALTYPE, public, dimension(:), allocatable   :: as,an,at,astk,av
 
 !  time scale ratio r
    REALTYPE, public, dimension(:), allocatable   :: r
@@ -242,6 +242,7 @@
    integer, parameter                            :: quasiEq=1
    integer, parameter                            :: weakEqKbEq=2
    integer, parameter                            :: weakEqKb=3
+   integer, parameter                            :: KC94H13=4
 
 !  method to solve equation for k_b
    integer, parameter                            :: kb_algebraic=1
@@ -583,6 +584,10 @@
    if (rc /= 0) stop 'init_turbulence: Error allocating (cmue2)'
    cmue2 = _ZERO_
 
+   allocate(cmue3(0:nlev),stat=rc)
+   if (rc /= 0) stop 'init_turbulence: Error allocating (cmue3)'
+   cmue3 = _ZERO_
+
    allocate(gam(0:nlev),stat=rc)
    if (rc /= 0) stop 'init_turbulence: Error allocating (gam)'
    gam = _ZERO_
@@ -598,6 +603,14 @@
    allocate(at(0:nlev),stat=rc)
    if (rc /= 0) stop 'init_turbulence: Error allocating (at)'
    at = _ZERO_
+
+   allocate(astk(0:nlev),stat=rc)
+   if (rc /= 0) stop 'init_turbulence: Error allocating (astk)'
+   astk = _ZERO_
+
+   allocate(av(0:nlev),stat=rc)
+   if (rc /= 0) stop 'init_turbulence: Error allocating (av)'
+   av = _ZERO_
 
    allocate(r(0:nlev),stat=rc)
    if (rc /= 0) stop 'init_turbulence: Error allocating (r)'
@@ -2013,7 +2026,7 @@
 !
 ! !INTERFACE:
    subroutine do_turbulence(nlev,dt,depth,u_taus,u_taub,z0s,z0b,h,      &
-                            NN,SS,SSu,SSv,SSUS,SSVS,xP)
+                            NN,SS,SSu,SSv,SSS,SSUS,SSVS,xP)
 !
 ! !DESCRIPTION: This routine is the central point of the
 ! turbulence scheme. It determines the order, in which
@@ -2115,11 +2128,14 @@
 !  shear-frequency squared (1/s^2)
    REALTYPE, intent(in)                :: SS(0:nlev)
 
-!  shear-frequency squared (1/s^2)
+!  shear-frequency squared (X) (1/s^2)
    REALTYPE, intent(in)                :: SSu(0:nlev)
 
-!  shear-frequency squared (1/s^2)
+!  shear-frequency squared (Y) (1/s^2)
    REALTYPE, intent(in)                :: SSv(0:nlev)
+  
+!  Stokes shear-frequency squared (1/s^2)
+   REALTYPE, intent(in)                :: SSS(0:nlev) 
 
 !  Stokes shear (X) (1/s)
    REALTYPE, intent(in)                :: SSUS(0:nlev)
@@ -2138,7 +2154,6 @@
 !EOP
 !-------------------------------------------------------------------------
 !BOC
-
    select case (turb_method)
    case (algebraic)
 !  solve a model for algebraically described diffusity
@@ -2162,7 +2177,7 @@
          call production(nlev,NN,SS,SSu,SSv,SSUS,SSVS)
       end if
 
-      call alpha_mnb(nlev,NN,SS)
+      call alpha_mnb(nlev,NN,SS,SSU,SSV,SSS,SSUS,SSVS)
       call stabilityfunctions(nlev)
       call do_tke(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
       call do_lengthscale(nlev,dt,depth,u_taus,u_taub,z0s,z0b,h,NN,SS)
@@ -2187,24 +2202,35 @@
       case (quasiEq)
          ! quasi-equilibrium model
 
-         call alpha_mnb(nlev,NN,SS)
+         call alpha_mnb(nlev,NN,SS,SSU,SSV,SSS,SSUS,SSVS)
          call cmue_d(nlev)
          call do_tke(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
          call do_kb(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
          call do_lengthscale(nlev,dt,depth,u_taus,u_taub,z0s,z0b,h,NN,SS)
          call do_epsb(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
-         call alpha_mnb(nlev,NN,SS)
+         call alpha_mnb(nlev,NN,SS,SSU,SSV,SSS,SSUS,SSVS)
          call kolpran(nlev)
 
       case (weakEqKbEq)
 
-         call alpha_mnb(nlev,NN,SS)
+         call alpha_mnb(nlev,NN,SS,SSU,SSV,SSS,SSUS,SSVS)
          call cmue_c(nlev)
          call do_tke(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
          call do_kb(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
          call do_lengthscale(nlev,dt,depth,u_taus,u_taub,z0s,z0b,h,NN,SS)
          call do_epsb(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
-         call alpha_mnb(nlev,NN,SS)
+         call alpha_mnb(nlev,NN,SS,SSU,SSV,SSS,SSUS,SSVS)
+         call kolpran(nlev)
+
+      case (KC94H13)
+
+         call alpha_mnb(nlev,NN,SS,SSU,SSV,SSS,SSUS,SSVS)
+         call cmue_H(nlev)
+         call do_tke(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
+         call do_kb(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
+         call do_lengthscale(nlev,dt,depth,u_taus,u_taub,z0s,z0b,h,NN,SS)
+         call do_epsb(nlev,dt,u_taus,u_taub,z0s,z0b,h,NN,SS)
+         call alpha_mnb(nlev,NN,SS,SSU,SSV,SSS,SSUS,SSVS)
          call kolpran(nlev)
 
       case (weakEqKb)
@@ -2508,14 +2534,16 @@
    do i=0,nlev
       x        =  sqrt(tke(i))*L(i)
 !     momentum
-      num(i)   =  max(0.00001,cmue1(i)*x)
+      num(i)   =  max(1.e-7,cmue1(i)*x)
 !     heat
-      nuh(i)   =  max(0.00001,cmue2(i)*x)
+      nuh(i)   =  max(1.e-7,cmue2(i)*x)
 !     salinity
-      nus(i)   =  max(0.00001,cmue2(i)*x)
+      nus(i)   =  max(1.e-7,cmue2(i)*x)
+!     Stokes momentum
+      numS(i) = max(1.e-7,cmue3(i)*x)
    end do
    !TEMPORARY
-   numS=0.0!num
+   !numS=0.0!num
 
    return
    end subroutine kolpran
@@ -2583,7 +2611,9 @@
    cmue1(nlev)   = cmue1(nlev-1)
    cmue2(0)      = cmue2(1)
    cmue2(nlev)   = cmue2(nlev-1)
-
+   cmue3(0)      = cmue3(1)
+   cmue3(nlev)   = cmue3(nlev-1)
+   
    return
    end subroutine stabilityfunctions
 !EOC
@@ -3446,10 +3476,13 @@
    if (allocated(gams)) deallocate(gams)
    if (allocated(cmue1)) deallocate(cmue1)
    if (allocated(cmue2)) deallocate(cmue2)
+   if (allocated(cmue3)) deallocate(cmue3)
    if (allocated(gam)) deallocate(gam)
    if (allocated(an)) deallocate(an)
    if (allocated(as)) deallocate(as)
    if (allocated(at)) deallocate(at)
+   if (allocated(astk)) deallocate(astk)
+   if (allocated(av)) deallocate(av)
    if (allocated(r)) deallocate(r)
    if (allocated(Rig)) deallocate(Rig)
    if (allocated(xRf)) deallocate(xRf)

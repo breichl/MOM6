@@ -455,9 +455,10 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
   real :: LangEnhK     ! Langmuir enhancement for mixing coefficient 
   logical :: StokesShearInRIB  ! Use Stokes Shear in RIb calculation
   logical :: SurfaceStokesinRIB ! Use Surface Stokes in RIb
-  real :: surfHuS, surfHvS, surfUs, surfVs
+  real :: surfHuS, surfHvS, surfUs, surfVs, wavedir, currentdir
   real :: VarUp, VarDn, M, VarLo, VarAvg
-
+  real :: H10pct, H20pct,CMNFACT, USx20pct, USy20pct
+  integer :: B 
 
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then
@@ -504,21 +505,6 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
       Coriolis = 0.25*( (G%CoriolisBu(i,j)   + G%CoriolisBu(i-1,j-1)) &
                        +(G%CoriolisBu(i-1,j) + G%CoriolisBu(i,j-1)) )
       surfFricVel = uStar(i,j)
-
-      if (present(Waves).and.associated(Waves)) then
-        LangEnhW   = WAVES%LangmuirEF_W(i,j)
-        LangEnhVT2 = WAVES%LangmuirEF_Vt2(i,j)
-        LangEnhK   = WAVES%LangmuirEF_K(i,j)
-        StokesShearInRIb   = Waves%StokesShearInRIb
-        SurfaceStokesInRIb = Waves%SurfaceStokesinRIb
-      else
-        LangEnhW   = 1.0
-        LangEnhVT2 = 1.0
-        LangEnhK   = 1.0
-        StokesShearInRIb = .false.
-        SurfaceStokesInRIb = .false.
-      endif
-
 
       ! Bullk Richardson number computed for each cell in a column,
       ! assuming OBLdepth = grid cell depth. After Rib(k) is
@@ -637,12 +623,6 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
             surfHsalt = surfHsalt + Salt(i,j,ktmp) * delH
             surfHu    = surfHu + 0.5*(u(i,j,ktmp)+u(i-1,j,ktmp)) * delH
             surfHv    = surfHv + 0.5*(v(i,j,ktmp)+v(i,j-1,ktmp)) * delH
-            if (StokesShearInRIb) then
-            surfHuS    = surfHuS + 0.5*(Waves%us_x(i,j,ktmp)+&
-                         Waves%us_x(i,j,ktmp)) * delH
-            surfHvS    = surfHvS + 0.5*(Waves%us_y(i,j,ktmp)+&
-                         Waves%us_y(i,j,ktmp)) * delH
-            endif
           ! endif
         enddo
 
@@ -650,14 +630,86 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
         surfSalt = surfHsalt / hTot
         surfU    = surfHu    / hTot
         surfV    = surfHv    / hTot
-        surfUS   = surfHuS   / hTot
-        surfVS   = surfHvS   / hTot
+
         ! vertical shear between present layer and
         ! surface layer averaged surfU,surfV.
         ! C-grid average to get Uk and Vk on T-points.
         Uk         = 0.5*(u(i,j,k)+u(i-1,j,k)) - surfU
         Vk         = 0.5*(v(i,j,k)+v(i,j-1,k)) - surfV
         
+
+        if (present(Waves).and.associated(Waves)) then
+           StokesShearInRIb   = Waves%StokesShearInRIb
+           SurfaceStokesInRIb = Waves%SurfaceStokesinRIb
+           !/
+           ! If Stokes Shear in RIb, compute 10% of OBL Stokes average
+           !  rather than computing this from discritized, we can compute
+           !  more exactly through integration from spectrum
+           surfUS = 0.0 ;surfVS = 0.0;
+           H10pct=min(-0.1,-hTot);!hTot is 10% of OBL
+           if (StokesShearInRIb) then
+              do b=1,WAVES%NumBands
+                 CMNFACT= (1.0 - EXP(H10pct*WAVES%WaveNum_Cen(b))) / H10pct/ &
+                      (2*WAVES%WaveNum_Cen(b))
+                 surfUS = surfUS + 0.5 * ( WAVES%STKx0(i,j,b) + &
+                      WAVES%STKx0(i-1,j,b) ) * CMNFACT
+                 surfVS = surfVS + 0.5 * ( WAVES%STKy0(i,j,b) + &
+                      WAVES%STKy0(i,j-1,b) ) * CMNFACT
+              enddo
+           endif
+           
+           !/
+           ! Now compute Langmuir number at h points.
+           USy20pct = 0.0;USx20pct = 0.0;
+           H20pct=min(-0.1,-hTot*2.);
+           do b=1,WAVES%NumBands
+              CMNFACT = (1.0 - EXP(H20pct*2*WAVES%WaveNum_Cen(b))) &
+                   / (0.0-H20pct) / (2*WAVES%WaveNum_Cen(b))
+              USy20pct = USy20pct + 0.5 * ( WAVES%STKy0(i,j,b) &
+                   + WAVES%STKy0(i,j-1,b) ) * CMNFACT
+              USx20pct = USx20pct + 0.5 * ( WAVES%STKx0(i,j,b) &
+                   + WAVES%STKx0(i-1,j,b) ) * CMNFACT
+           enddo
+           ! Stokes Shear
+           wavedir=atan2(0.5*(waves%us_y(i,j,1)+waves%us_y(i,j-1,1) -     &
+                waves%us_y(i,j,ksfc)-waves%us_y(i,j-1,ksfc)),             &
+                0.5*(waves%us_x(i,j,1)+waves%us_x(i-1,j,1) -              &
+                waves%us_x(i,j,ksfc)-waves%us_x(i-1,j,ksfc)))
+           ! Lagrangian current shear (Reynolds stress direction approx)
+           currentdir= atan2(0.5*(waves%us_y(i,j,1)+waves%us_y(i,j-1,1) - &
+                waves%us_y(i,j,ksfc)-waves%us_y(i,j-1,ksfc)               &
+                +v(i,j,1)+v(i,j-1,1)-v(i,j,ksfc)-v(i,j-1,ksfc)),          &
+                0.5*(waves%us_x(i,j,1)+waves%us_x(i-1,j,1) -              &
+                waves%us_x(i,j,ksfc)-waves%us_x(i-1,j,ksfc)               &
+                +u(i,j,1)+u(i-1,j,1)-u(i,j,ksfc)-u(i-1,j,ksfc)))
+           WAVES%LangNum(i,j) = sqrt(surfFricVel /      &
+                max(1.e-10,sqrt(USx20pct**2 + USy20pct**2))) &
+                *sqrt(1./max(0.000001,cos(wavedir-currentdir)))
+
+           !/Compute enhancement factors
+           if (WAVES%LangmuirEnhanceW) then
+              LangEnhW   = sqrt(1.+(1.5*WAVES%LangNum(i,j))**(-2) + &
+                                        (5.4*WAVES%LangNum(i,j))**(-4))
+           else
+              LangEnhW = 1.0
+           endif
+           if (WAVES%LangmuirEnhanceVt2) then
+              LangEnhVT2 = min(50.,1. + 2.3/sqrt(WAVES%LangNum(i,j)))
+           else
+              LangEnhVT2 = 1.0
+           endif
+           if (WAVES%LangmuirEnhanceK) then
+              LangEnhK   = min(2.25, 1. + 1./WAVES%LangNum(i,j))
+           endif
+        else
+           LangEnhW   = 1.0
+           LangEnhVT2 = 1.0
+           LangEnhK   = 1.0
+           StokesShearInRIb = .false.
+           SurfaceStokesInRIb = .false.
+        endif
+
+
         !BGR/ Adding Stokes drift
         if (StokesShearInRIb) then
            !Stokes drift is on grid centers for now
@@ -768,10 +820,6 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
       OBLdepth_0d = min( OBLdepth_0d, -iFaceHeight(G%ke+1) ) ! no deeper than bottom
       kOBL        = CVmix_kpp_compute_kOBL_depth( iFaceHeight, cellHeight, OBLdepth_0d )
 
-      ! Passing OBL to waves for next time step Langmuir number
-      if (present(Waves).and.associated(Waves)) then
-         WAVES%OBLdepth(i,j)=OBLdepth_0d
-      endif
 
 
 !*************************************************************************
