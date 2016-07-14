@@ -20,6 +20,7 @@ implicit none ; private
 
 public MOM_wave_interface_init
 public Import_Stokes_Drift
+public StokesMixing
 
 
 !> Container for wave related parameters
@@ -31,6 +32,11 @@ private
   !^ True if Stokes drift is present and mixing
   !  should be applied to Lagrangian current
   !  (mean current + Stokes drift) 
+  logical, public :: StokesMixing
+  !^ True if Stokes drift is present and mixing
+  !  should be applied directly to Stokes current
+  !  (with separate mixing parameter for Eulerian
+  !  mixing contribution)
   logical, public :: LangmuirEnhanceW   
   !^ True if turbulent velocity scales should be
   !  enhanced due to Langmuir mixing.
@@ -76,7 +82,8 @@ private
        STKx0 !< Stokes Drift spectrum in x
   real ALLOCABLE_, dimension( NIMEM_, NJMEMB_,NKMEM_), public :: &
        STKy0 !< Stokes Drift spectrum in y 
-  
+  real ALLOCABLE_, dimension( NIMEM_, NJMEM_,NKMEM_), public :: &
+       KvS !< Viscosity for Stokes Drift shear 
   logical :: dataoverrideisinitialized
 end type wave_parameters_CS
 
@@ -130,6 +137,9 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
   call get_param(param_file, mod, "LAGRANGIAN_MIXING", CS%LagrangianMixing, &
        "Flag to use Lagrangian Mixing of momentum", units="", &
        Default=.false.)
+  call get_param(param_file, mod, "STOKES_MIXING", CS%StokesMixing, &
+       "Flag to use Stokes Mixing of momentum", units="", &
+       Default=.true.)  
   call get_param(param_file, mod, "LANGMUIR_ENHANCE_W", CS%LangmuirEnhanceW, &
        'Flag for Langmuir turbulence enhancement of turbulent'//&
        'velocity scale.', units="", Default=.false.) 
@@ -203,6 +213,8 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
   ALLOC_ (CS%LangNum(G%isc:G%iec,G%jsc:G%jec)) ; CS%LangNum(:,:) = 1e10
   ALLOC_ (CS%US0_x(G%isdB:G%iedB,G%jsd:G%jed)) ; CS%US0_x(:,:) = 0.
   ALLOC_ (CS%US0_y(G%isd:G%ied,G%jsdB:G%jedB)) ; CS%US0_y(:,:) = 0.  
+  ! Viscosity for Stokes drift
+  ALLOC_ (CS%KvS(G%isd:G%Ied,G%jsd:G%jed,G%ke)) ; CS%KvS(:,:,:) = 1.e-6
 
   !/BGRTEMP{
   print*,' '
@@ -400,6 +412,7 @@ subroutine Stokes_Drift_by_data_override(day_center,G,GV,CS)
     ALLOC_ ( CS%WaveNum_Cen(1:id) ) ; CS%WaveNum_Cen(:)=0.0
     ALLOC_ ( CS%STKx0(G%isdB:G%iedB,G%jsd:G%jed,1:id)) ; CS%STKx0(:,:,:) = 0.0
     ALLOC_ ( CS%STKy0(G%isd:G%ied,G%jsdB:G%jedB,1:id)) ; CS%STKy0(:,:,:) = 0.0
+    
 
     ! Reading wavenumber bins
     start = 1; count = 1; count(1) = id
@@ -440,4 +453,81 @@ subroutine Stokes_Drift_by_data_override(day_center,G,GV,CS)
   enddo
   
 end subroutine Stokes_Drift_by_Data_Override
+!/
+!/
+!/
+subroutine StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
+  ! Arguments
+  type(ocean_grid_type),                  intent(in)    :: G              !< Ocean grid
+  type(verticalGrid_type),                intent(in)    :: GV             !< Ocean vertical grid
+  real, intent(in)                                         :: Dt             !< Time step of MOM6 [s] for GOTM turbulence solver
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(in)    :: h              !< Layer/level thicknesses (units of H)
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(inout)    :: u              !< Velocity i-component (m/s)
+  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), intent(inout)    :: v              !< Velocity j-component (m/s)
+  type(Wave_parameters_CS), pointer                         :: Waves  !< Surface wave related control structure.
+  type(forcing), intent(in)                             :: FLUXES
+  ! Local variables
+  REAL :: dTauUp, dTauDn
+  INTEGER :: i,j,k
+
+
+ print*,maxval(abs(u)),maxval(abs(v))
+ WAVES%kvs=0.e-7
+  do k = 1, G%ke
+     do j = G%jsc, G%jec
+        do i = G%iscB, G%iecB
+           if (k.eq.1) then
+              dTauUp = FLUXES%taux(i,j)/1000.!Convert????
+              dTauDn =  0.5*(WAVES%Kvs(i,j,k+1)+WAVES%Kvs(i+1,j,k+1))*&
+                   (waves%us_x(i,j,k)-waves%us_x(i,j,k+1))&
+                   /( GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
+           elseif (k.lt.G%ke-1) then
+              dTauUp =   0.5*(waves%Kvs(i,j,k)+waves%Kvs(i+1,j,k))*&
+                   (waves%us_x(i,j,k-1)-waves%us_x(i,j,k))&
+                   /( GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
+              dTauDn =  0.5*(waves%Kvs(i,j,k+1)+waves%Kvs(i+1,j,k+1))*&
+                   (waves%us_x(i,j,k)-waves%us_x(i,j,k+1))&
+                   /( GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
+           elseif (k.eq.G%ke) then
+              dTauUp =   0.5*(waves%Kvs(i,j,k)+waves%Kvs(i+1,j,k))*&
+                   (waves%us_x(i,j,k-1)-waves%us_x(i,j,k))&
+                   /( GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
+              dTauDn = 0.0!FLUXES%taux
+           endif
+           u(i,j,k) = u(i,j,k)+(dTauUp-dTauDn) / ( GV%H_to_m *h(i,j,k)) * DT    
+        enddo
+     enddo
+  enddo
+     
+
+  do k = 1, G%ke
+     do j = G%jscB, G%jecB
+        do i = G%isc, G%iec
+           if (k.eq.1) then
+              dTauUp = FLUXES%tauy(i,j)/1000.!Convert????
+              dTauDn = 0.5*(waves%Kvs(i,j,k+1)+waves%Kvs(i,j+1,k+1))&
+                   *(waves%us_y(i,j,k)-waves%us_y(i,j,k+1))&
+                   /( GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
+           elseif (k.lt.G%ke-1) then
+              dTauUp =   0.5*(waves%Kvs(i,j,k)+waves%Kvs(i,j+1,k))*&
+                   (waves%us_y(i,j,k-1)-waves%us_y(i,j,k))&
+                   /( GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
+              dTauDn =  0.5*(waves%Kvs(i,j,k+1)+waves%Kvs(i,j+1,k+1))*&
+                   (waves%us_y(i,j,k)-waves%us_y(i,j,k+1))&
+                   /( GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
+           elseif (k.eq.G%ke) then
+              dTauUp =   0.5*(waves%Kvs(i,j,k)+waves%Kvs(i,j+1,k))*&
+                   (waves%us_y(i,j,k-1)-waves%us_y(i,j,k))&
+                   /( GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
+              dTauDn = 0.0!FLUXES%tauy
+           endif
+           v(i,j,k) = v(i,j,k)+(dTauUp-dTauDn) / ( GV%H_to_m *h(i,j,k)) * DT    
+        enddo
+     enddo
+  enddo
+
+  print*,maxval(abs(u)),maxval(abs(v))
+end subroutine StokesMixing
+
+
 end module MOM_wave_interface

@@ -39,7 +39,7 @@ type, public :: GOTM_CS ; private
 
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: TKE, TKEo
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: EPS, LenScale
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KV, KVS
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KV
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KT
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KS
 
@@ -96,7 +96,6 @@ logical function GOTM_init(paramFile, G, diag, Time, CS, passive)
   ALLOC_ (CS%LenScale(is:Ie,js:je,nz+1)) ; CS%LenScale(:,:,:) = max(1.e-8,g_cde*g_k_min**1.5/g_eps_min)
   
   ALLOC_ (CS%KV(is:Ie,js:je,nz+1)) ; CS%KV(:,:,:) = 1.E-6
-  ALLOC_ (CS%KVS(is:Ie,js:je,nz+1)) ; CS%KVS(:,:,:) = 1.E-6
   ALLOC_ (CS%KS(is:Ie,js:je,nz+1)) ; CS%KS(:,:,:) = 1.E-6
   ALLOC_ (CS%KT(is:Ie,js:je,nz+1)) ; CS%KT(:,:,:) = 1.E-6
 
@@ -290,7 +289,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
            g_TKEo(kgotm) = CS%TKEo(i,j,k)
            g_EPS(kgotm) = CS%EPS(i,j,k)
            g_Kdm(kgotm) = CS%Kv(i,j,k)
-           g_KdmS(kgotm) = CS%KvS(i,j,k)
+           g_KdmS(kgotm) = WAVES%KvS(i,j,k)
            g_Kdt(kgotm) = CS%Kt(i,j,k)
            g_Kds(kgotm) = CS%Ks(i,j,k)
            g_l(kgotm)   = CS%LenScale(i,j,k)
@@ -315,7 +314,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
             !print*,S2_1d(kgotm),N2_1d(kgotm)
          endif
          CS%Kv(i,j,k) = g_Kdm(kgotm)
-         CS%KvS(i,j,k) = g_KdmS(kgotm)
+         WAVES%KvS(i,j,k) = g_KdmS(kgotm)
          CS%Kt(i,j,k) = g_Kdt(kgotm)
          CS%Ks(i,j,k) = g_Kds(kgotm)
          Kv(i,j,k) = g_Kdm(kgotm) 
@@ -328,13 +327,22 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
       enddo
     enddo ! i
   enddo ! j
-  
-  ! do i=3,4
-  !    do j=3,4
-  !       print*,i,j,'-----'
-  !       print*,u(i,j,1),u(i,j,2)
-  !    enddo
-  ! enddo
+  !Brandon: Hacking to update HALO until properly resolved
+  do i=G%isd,G%ied
+     do j=G%isd,G%ied
+        if (i.lt.G%isc) then
+           WAVES%KvS(i,j,:)=WAVES%KvS(G%isc,j,:)
+        elseif  (i.gt.G%iec) then
+           WAVES%KvS(i,j,:)=WAVES%KvS(G%iec,j,:)
+        endif
+        if (j.lt.G%jsc) then
+           WAVES%KvS(i,j,:)=WAVES%KvS(i,G%jsc,:)
+        elseif  (j.gt.G%jec) then
+           WAVES%KvS(i,j,:)=WAVES%KvS(G%jec,j,:)
+        endif
+     enddo
+  enddo
+
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then
 !    call hchksum(Ks, "KPP out: Ks",G,haloshift=0)

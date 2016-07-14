@@ -58,7 +58,7 @@ use MOM_variables,           only : thermo_var_ptrs, vertvisc_type, accel_diag_p
 use MOM_variables,           only : cont_diag_ptrs, MOM_thermovar_chksum, p3d
 use MOM_verticalGrid,        only : verticalGrid_type
 use MOM_wave_speed,          only : wave_speeds
-use MOM_wave_interface, only : wave_parameters_CS
+use MOM_wave_interface, only : wave_parameters_CS, StokesMixing
 use time_manager_mod,        only : increment_time ! for testing itides (BDM)
 
 implicit none ; private
@@ -637,6 +637,9 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
         do k=1,nz+1 ; do j=js,je ; do i=is,ie
           visc%Kd_extra_T(i,j,k) = Kd_heat(i,j,k) - Kd_int(i,j,k)
         enddo ; enddo ; enddo
+      endif
+      if (WAVES%StokesMixing) then
+         call StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
       endif
   endif
 
