@@ -289,7 +289,11 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
            g_TKEo(kgotm) = CS%TKEo(i,j,k)
            g_EPS(kgotm) = CS%EPS(i,j,k)
            g_Kdm(kgotm) = CS%Kv(i,j,k)
-           g_KdmS(kgotm) = WAVES%KvS(i,j,k)
+           if (associated(WAVES)) then
+              g_KdmS(kgotm) = WAVES%KvS(i,j,k)
+           else
+              g_KdmS(kgotm)=0.0
+           endif
            g_Kdt(kgotm) = CS%Kt(i,j,k)
            g_Kds(kgotm) = CS%Ks(i,j,k)
            g_l(kgotm)   = CS%LenScale(i,j,k)
@@ -314,12 +318,18 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
             !print*,S2_1d(kgotm),N2_1d(kgotm)
          endif
          CS%Kv(i,j,k) = g_Kdm(kgotm)
-         WAVES%KvS(i,j,k) = g_KdmS(kgotm)
+         if (associated(WAVES)) then
+            WAVES%KvS(i,j,k) = g_KdmS(kgotm)
+         endif
          CS%Kt(i,j,k) = g_Kdt(kgotm)
          CS%Ks(i,j,k) = g_Kds(kgotm)
          Kv(i,j,k) = g_Kdm(kgotm) 
          Kt(i,j,k) = g_Kdt(kgotm) 
          Ks(i,j,k) = g_Kds(kgotm)
+         !if (j.eq.3 .and. i.eq.3 .and. k.lt.10) then
+         !   print*,k,'--------'
+         !   print*,kt(i,j,k),kv(i,j,k),sqrt(u(i,j,k)**2+v(i,j,k)**2)
+         !endif
          CS%TKEo(i,j,k) = CS%TKE(i,j,k)
          CS%TKE(i,j,k) = g_TKE(kgotm)
          CS%EPS(i,j,k) = g_EPS(kgotm)
@@ -328,20 +338,22 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
     enddo ! i
   enddo ! j
   !Brandon: Hacking to update HALO until properly resolved
-  do i=G%isd,G%ied
-     do j=G%isd,G%ied
-        if (i.lt.G%isc) then
-           WAVES%KvS(i,j,:)=WAVES%KvS(G%isc,j,:)
-        elseif  (i.gt.G%iec) then
-           WAVES%KvS(i,j,:)=WAVES%KvS(G%iec,j,:)
-        endif
-        if (j.lt.G%jsc) then
-           WAVES%KvS(i,j,:)=WAVES%KvS(i,G%jsc,:)
-        elseif  (j.gt.G%jec) then
-           WAVES%KvS(i,j,:)=WAVES%KvS(G%jec,j,:)
-        endif
+  if (associated(WAVES)) then
+     do i=G%isd,G%ied
+        do j=G%isd,G%ied
+           if (i.lt.G%isc) then
+              WAVES%KvS(i,j,:)=WAVES%KvS(G%isc,j,:)
+           elseif  (i.gt.G%iec) then
+              WAVES%KvS(i,j,:)=WAVES%KvS(G%iec,j,:)
+           endif
+           if (j.lt.G%jsc) then
+              WAVES%KvS(i,j,:)=WAVES%KvS(i,G%jsc,:)
+           elseif  (j.gt.G%jec) then
+              WAVES%KvS(i,j,:)=WAVES%KvS(G%jec,j,:)
+           endif
+        enddo
      enddo
-  enddo
+  endif
 
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then

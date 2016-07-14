@@ -139,7 +139,7 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
        Default=.false.)
   call get_param(param_file, mod, "STOKES_MIXING", CS%StokesMixing, &
        "Flag to use Stokes Mixing of momentum", units="", &
-       Default=.true.)  
+       Default=.false.)  
   call get_param(param_file, mod, "LANGMUIR_ENHANCE_W", CS%LangmuirEnhanceW, &
        'Flag for Langmuir turbulence enhancement of turbulent'//&
        'velocity scale.', units="", Default=.false.) 
@@ -467,34 +467,39 @@ subroutine StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
   type(Wave_parameters_CS), pointer                         :: Waves  !< Surface wave related control structure.
   type(forcing), intent(in)                             :: FLUXES
   ! Local variables
-  REAL :: dTauUp, dTauDn
+  REAL :: dTauUp, dTauDn, DVel
   INTEGER :: i,j,k
 
+! This is a very poor way to do Stokes mixing.
+!  Cannot separate Stokes/Eulerian mixing due to boundary condition.
+!  This is really just a temporary attempt...
 
- print*,maxval(abs(u)),maxval(abs(v))
- WAVES%kvs=0.e-7
   do k = 1, G%ke
      do j = G%jsc, G%jec
         do i = G%iscB, G%iecB
            if (k.eq.1) then
-              dTauUp = FLUXES%taux(i,j)/1000.!Convert????
+              dTauUp = 0.0!FLUXES%taux(i,j)/1000.!Convert????
               dTauDn =  0.5*(WAVES%Kvs(i,j,k+1)+WAVES%Kvs(i+1,j,k+1))*&
                    (waves%us_x(i,j,k)-waves%us_x(i,j,k+1))&
-                   /( GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
+                   /(GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
            elseif (k.lt.G%ke-1) then
               dTauUp =   0.5*(waves%Kvs(i,j,k)+waves%Kvs(i+1,j,k))*&
                    (waves%us_x(i,j,k-1)-waves%us_x(i,j,k))&
-                   /( GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
+                   /(GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
               dTauDn =  0.5*(waves%Kvs(i,j,k+1)+waves%Kvs(i+1,j,k+1))*&
                    (waves%us_x(i,j,k)-waves%us_x(i,j,k+1))&
-                   /( GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
+                   /(GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
            elseif (k.eq.G%ke) then
               dTauUp =   0.5*(waves%Kvs(i,j,k)+waves%Kvs(i+1,j,k))*&
                    (waves%us_x(i,j,k-1)-waves%us_x(i,j,k))&
-                   /( GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
+                   /(GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
               dTauDn = 0.0!FLUXES%taux
            endif
-           u(i,j,k) = u(i,j,k)+(dTauUp-dTauDn) / ( GV%H_to_m *h(i,j,k)) * DT    
+           DVel = (dTauUp-dTauDn) / (GV%H_to_m *h(i,j,k)) * DT
+           !if (i.eq.3 .and. j.eq.3 .and. k.eq.1) then
+           !   print*,u(i,j,k),(DVel),dtaudn
+           !endif
+           u(i,j,k) = u(i,j,k)+DVel
         enddo
      enddo
   enddo
@@ -504,29 +509,32 @@ subroutine StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
      do j = G%jscB, G%jecB
         do i = G%isc, G%iec
            if (k.eq.1) then
-              dTauUp = FLUXES%tauy(i,j)/1000.!Convert????
+              dTauUp = 0.0!FLUXES%tauy(i,j)/1000.!Convert????
               dTauDn = 0.5*(waves%Kvs(i,j,k+1)+waves%Kvs(i,j+1,k+1))&
                    *(waves%us_y(i,j,k)-waves%us_y(i,j,k+1))&
-                   /( GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
+                   /(GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
            elseif (k.lt.G%ke-1) then
               dTauUp =   0.5*(waves%Kvs(i,j,k)+waves%Kvs(i,j+1,k))*&
                    (waves%us_y(i,j,k-1)-waves%us_y(i,j,k))&
-                   /( GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
+                   /(GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
               dTauDn =  0.5*(waves%Kvs(i,j,k+1)+waves%Kvs(i,j+1,k+1))*&
                    (waves%us_y(i,j,k)-waves%us_y(i,j,k+1))&
-                   /( GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
+                   /(GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
            elseif (k.eq.G%ke) then
               dTauUp =   0.5*(waves%Kvs(i,j,k)+waves%Kvs(i,j+1,k))*&
                    (waves%us_y(i,j,k-1)-waves%us_y(i,j,k))&
-                   /( GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
+                   /(GV%H_to_m *0.5*(h(i,j,k-1)+h(i,j,k)) )
               dTauDn = 0.0!FLUXES%tauy
            endif
-           v(i,j,k) = v(i,j,k)+(dTauUp-dTauDn) / ( GV%H_to_m *h(i,j,k)) * DT    
+           DVel = (dTauUp-dTauDn) / (GV%H_to_m *h(i,j,k)) * DT
+           !if (i.eq.3 .and. j.eq.3 .and. k.eq.1) then
+           !   print*,v(i,j,k),(DVel),dtaudn
+           !endif
+           v(i,j,k) = v(i,j,k)+DVel
         enddo
      enddo
   enddo
 
-  print*,maxval(abs(u)),maxval(abs(v))
 end subroutine StokesMixing
 
 

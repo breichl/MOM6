@@ -638,8 +638,10 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
           visc%Kd_extra_T(i,j,k) = Kd_heat(i,j,k) - Kd_int(i,j,k)
         enddo ; enddo ; enddo
       endif
-      if (WAVES%StokesMixing) then
-         call StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
+      if (associated (waves)) then
+         if (WAVES%StokesMixing) then
+            call StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
+         endif
       endif
   endif
 

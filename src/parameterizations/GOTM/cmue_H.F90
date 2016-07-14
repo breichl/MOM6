@@ -123,8 +123,8 @@
      C1 = 0.08
      C2 = 0.7
      C3 = 0.2
-     CS1 = C1
-     CS2 = C2
+     CS1 = 0.0!C1
+     CS2 = 0.0!C2
      
      DS0 = A1*(1.-6.*A1/B1-3.*CS1)
      DM0 = A1*(1.-6.*A1/B1-3.*C1)
@@ -133,10 +133,10 @@
      DO I = 1, NLEV-1
 
 !        print*,'-',AS(I),AN(I),AV(I)
-        AN(I)=min(AN(I),0.029)
+        AN(I)=min(AN(I),0.015)
         AN(I)=max(-0.28,AN(I))
-        AV(I)=0.0!min(AV(I),0.024)
-        ASTK(I)=min(ASTK(I),0.024)
+        AV(I)=min(AV(I),0.015)
+        ASTK(I)=min(ASTK(I),0.015)
 
         DS1 = 1. - 9.*A1 * (A2*AN(I) + A1*AV(I))
         DS2 = -9.*A1*A2*CS2*AN(I)
@@ -155,10 +155,18 @@
         cmue1(I) = max(SM,1.e-10)
         cmue2(I) = max(SH,1.e-10)
         cmue3(I) = max(SMS,1.e-10)
-!        print*,i,cmue1(i),cmue2(i),cmue3(i)
+   
+        cmue3(I) = a2*((9.*a1*a2*an(i)-1.)*(1.-6*a1/b1))  / &
+                      ((9.*a1*a2*an(i)-1.)*(1.-3*a2*an(i)*(6*a1+b2*(1-c3))))
+
      end do
 
+     
 
+     !print*,'h--------------'
+     !print*,cmue1(NLEV-5:NLEV)
+     !print*,cmue2(NLEV-5:NLEV)
+     !print*,AN(NLEV-5:NLEV)
 
      return
      end subroutine cmue_h

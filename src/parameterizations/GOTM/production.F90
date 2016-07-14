@@ -123,8 +123,6 @@
       enddo
    endif
 
-!   print*,maxval(P),maxval(PV)
-
    return
    end subroutine production
 !EOC
