@@ -773,7 +773,8 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
 
       call find_uv_at_h(u, v, h, u_h, v_h, G, GV)
       call energetic_PBL(h, u_h, v_h, tv, fluxes, dt, Kd_ePBL, G, GV, &
-                         CS%energetic_PBL_CSp, dSV_dT, dSV_dS, cTKE)
+                          CS%energetic_PBL_CSp, dSV_dT, dSV_dS, cTKE, &
+                          CS%KPP_buoy_flux, tv%eqn_of_state)
 
       ! If visc%MLD exists, copy the ePBL's MLD into it
       if (associated(visc%MLD)) then
@@ -797,6 +798,13 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
         ea(i,j,k) = ea(i,j,k) + Ent_int
         Kd_int(i,j,K)  = Kd_int(i,j,K) + Kd_add_here
 
+        !BGR
+        !visc%Kv_turb(i,j,K) = max(visc%Kv_turb(i,j,K),Kd_ePBL(i,j,K))
+        !Kd_int(i,j,K)  = max(Kd_int(i,j,K),Kd_ePBL(i,j,K))
+        !if (KD_ePBL(i,j,K).gt.1.e-5) then
+        !   visc%Kv_turb(i,j,K) = Kd_ePBL(i,j,K)
+        !   Kd_int(i,j,K)  = Kd_ePBL(i,j,K) 
+        !endif
         ! for diagnostics
         Kd_heat(i,j,K) = Kd_heat(i,j,K) + Kd_int(i,j,K)
         Kd_salt(i,j,K) = Kd_salt(i,j,K) + Kd_int(i,j,K)

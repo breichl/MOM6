@@ -74,7 +74,7 @@ use MOM_forcing_type, only : forcing
 use MOM_grid, only : ocean_grid_type
 use MOM_variables, only : thermo_var_ptrs
 use MOM_verticalGrid, only : verticalGrid_type
-! use MOM_EOS, only : calculate_density, calculate_density_derivs
+use MOM_EOS, only : EOS_type, calculate_density!, calculate_density_derivs
 ! use MOM_EOS, only : calculate_2_densities
 
 implicit none ; private
@@ -86,11 +86,23 @@ public energetic_PBL_get_MLD
 
 type, public :: energetic_PBL_CS ; private
   real    :: mstar           ! The ratio of the friction velocity cubed to the
+                             ! TKE input to the mixed layer, nondimensional. 
+  real    :: mstar_wi        ! The ratio of the friction velocity cubed to the
                              ! TKE input to the mixed layer, nondimensional.
+  real    :: mstar_wb        ! Description coming... basically, constain
+                             ! TKE input due to wave breaking.
+  real    :: mstar_lt        ! Description coming... basically, constrain
+                             ! TKE input due to Langmuir turbulence.
   real    :: nstar           ! The fraction of the TKE input to the mixed layer
                              ! available to drive entrainment, nondim.
   real    :: TKE_decay       ! The ratio of the natural Ekman depth to the TKE
                              ! decay scale, nondimensional.
+  real    :: TKE_decay_wi    ! The ratio of the natural Ekman depth to the TKE
+                             ! decay scale, nondimensional.
+  real    :: TKE_decay_wb    ! Description coming... decay scale related
+                             ! to wave breaking
+  real    :: TKE_decay_lt    ! Description coming... decay scale related
+                             ! to Langmuir turbulence
   real    :: MKE_to_TKE_effic ! The efficiency with which mean kinetic energy
                              ! released by mechanically forced entrainment of
                              ! the mixed layer is converted to TKE, nondim.
@@ -116,7 +128,8 @@ type, public :: energetic_PBL_CS ; private
                              ! diffusivity in the planetary boundary layer.
   type(time_type), pointer :: Time ! A pointer to the ocean model's clock.
   logical :: TKE_diagnostics = .false.
-
+  logical :: SeparateTKE = .false. !If true separate_tke
+  integer :: MixingLengthChoice  !Choice of mixing length parameterization
   type(diag_ctrl), pointer :: diag ! A structure that is used to regulate the
                              ! timing of diagnostic output.
 
@@ -143,8 +156,8 @@ integer :: num_msg = 0, max_msg = 2
 contains
 
 subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
-                         dSV_dT, dSV_dS, TKE_forced, dt_diag, last_call, &
-                         dT_expected, dS_expected)
+                         dSV_dT, dSV_dS, TKE_forced, BuoyFlux, EOS, 
+                         dt_diag, last_call, dT_expected, dS_expected)
   type(ocean_grid_type),                     intent(inout) :: G
   type(verticalGrid_type),                   intent(in)    :: GV
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(inout) :: h_3d
@@ -159,6 +172,8 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   logical,                         optional, intent(in)    :: last_call
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                                    optional, intent(out)   :: dT_expected, dS_expected
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)+1), intent(in)    :: buoyFlux !< Surface buoyancy flux (m2/s3)
+  type(EOS_type),                         pointer       :: EOS            !< Equation of state
 
 !    This subroutine determines the diffusivities from the integrated energetics
 !  mixed layer model.  It assumes that heating, cooling and freshwater fluxes
@@ -222,6 +237,9 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   real, dimension(SZI_(G)) :: &
     mech_TKE, &     !   The mechanically generated turbulent kinetic energy
                     ! available for mixing over a time step, in J m-2 = kg s-2.
+    TKE_wi,&
+    TKE_wb,&
+    TKE_lt,&
     conv_PErel, & ! The potential energy that has been convectively released
                     ! during this timestep, in J m-2 = kg s-2. A portion nstar_FC
                     ! of conv_PErel is available to drive mixing.
@@ -230,6 +248,9 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
     vhtot, &        ! layers above, in H m s-1.
 
     Idecay_len_TKE, &  ! The inverse of a turbulence decay length scale, in H-1.
+    Idecay_len_wi_TKE, &  ! The inverse of a turbulence decay length scale, in H-1.
+    Idecay_len_wb_TKE, &  ! The inverse of a turbulence decay length scale, in H-1.
+    Idecay_len_lt_TKE, &  ! The inverse of a turbulence decay length scale, in H-1. 
     h_bot, &        ! The distance from the bottom, in H.
     h_sum, &        ! The total thickness of the water column, in H.
     absf            ! The absolute value of f, in s-1.
@@ -257,6 +278,12 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   real, dimension(SZK_(GV)+1) :: &
     Kddt_h          ! The diapycnal diffusivity times a timestep divided by the
                     ! average thicknesses around a layer, in H (m or kg m-2).
+  real, dimension( SZK_(G)+1 )   :: N2_1d           ! Brunt-Vaisala frequency squared, at interfaces (1/s2)
+  real, dimension( SZK_(G)+1 )   :: N_1d           ! Brunt-Vaisala frequency squared, at interfaces (1/s2) 
+  real, dimension( SZK_(G) )   :: Rho_1d           ! Brunt-Vaisala frequency squared, at interfaces (1/s2)
+  real, dimension( SZK_(G) )   :: Pres_1d           ! Brunt-Vaisala frequency squared, at interfaces (1/s2)  
+  real, dimension( SZK_(G) )   :: Temp_1d           ! Brunt-Vaisala frequency squared, at interfaces (1/s2)  
+  real, dimension( SZK_(G) )   :: Salt_1d           ! Brunt-Vaisala frequency squared, at interfaces (1/s2)  
   real :: b1        ! b1 is inverse of the pivot used by the tridiagonal solver, in H-1.
   real :: h_neglect ! A thickness that is so small it is usually lost
                     ! in roundoff and can be neglected, in H.
@@ -282,7 +309,15 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   real :: vonKar    ! The vonKarman constant.
   real :: I_dtrho   ! 1.0 / (dt * Rho0) in m3 kg-1 s-1.  This is
                     ! used convert TKE back into ustar^3.
+  real :: I_dtmwirho  ! 1.0 / (dt*mstar_wi * Rho0) in m3 kg-1 s-1.  This is
+                    ! used convert TKE back into ustar^3.
+  real :: I_dtmwbrho  ! 1.0 / (dt*mstar_wb * Rho0) in m3 kg-1 s-1.  This is
+                    ! used convert TKE back into ustar^3.
+  real :: I_dtmltrho  ! 1.0 / (dt*mstar_lt * Rho0) in m3 kg-1 s-1.  This is
+                    ! used convert TKE back into ustar^3.  
   real :: U_star    ! The surface friction velocity, in m s-1.
+  real :: TAUMAG
+  real :: HS        ! The significant wave height in m
   real :: vstar     ! An in-situ turbulent velocity, in m s-1.
   real :: nstar_FC  ! The fraction of conv_PErel that can be converted to mixing, nondim.
   real :: TKE_reduc ! The fraction by which TKE and other energy fields are
@@ -319,6 +354,15 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   real :: dKddt_h_Newt ! The change between guesses at Kddt_h(K) with Newton's method, in H.
   real :: Kddt_h_newt  ! The Newton's method next guess for Kddt_h(K), in H.
   real :: exp_kh    ! The nondimensional decay of TKE across a layer, ND.
+  real :: MixLength ! Mixing Length used
+  real :: EkmanLength ! Ekman Length Scale
+  real :: MonObLength ! Monin-Obukhov length scale
+  real :: LimitLength ! Smallest of ekman or positive MO length
+  real :: BuoyLength ! Buoyancy length scale
+  real :: IBuoyLength,ILimitLength,IMonObLength,IEkmanLength
+  real :: pref
+  real :: gorho 
+  integer :: km1
   logical :: use_Newt  ! Use Newton's method for the next guess at Kddt_h(K).
   logical :: convectively_stable
   logical, dimension(SZI_(G)) :: &
@@ -361,6 +405,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
 
   h_neglect = GV%H_subroundoff
 
+  gorho = GV%G_Earth/GV%Rho0
   C1_3 = 1.0 / 3.0
   dt__diag = dt ; if (present(dt_diag)) dt__diag = dt_diag
   IdtdR0 = 1.0 / (dt__diag * GV%Rho0)
@@ -370,7 +415,6 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   h_tt_min = 0.0
   vonKar = 0.41
   I_dtrho = 0.0 ; if (dt*GV%Rho0 > 0.0) I_dtrho = 1.0 / (dt*GV%Rho0)
-
   ! Determine whether to zero out diagnostics before accumulation.
   reset_diags = .true.
   if (present(dt_diag) .and. write_diags .and. (dt__diag > dt)) &
@@ -439,6 +483,15 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
     ! interface.
     do i=is,ie ; if (G%mask2dT(i,j) > 0.5) then
       U_Star = fluxes%ustar(i,j)
+      ! Forc now use
+      TAUMAG = sqrt ( (0.5*(fluxes%taux(i,j)+fluxes%taux(i+1,j)))**2 &
+                     +(0.5*(fluxes%tauy(i,j)+fluxes%tauy(i,j+1)))**2)
+      ! This is a simple formula to give a reasonable relationship
+      !  between mean wave height and wind speed as a function of stress.
+      !  This has three coefficients, for now hard-coded to 10, 1, and 1.
+      !  The leading 1 within the log function must remain if the 
+      !  function is to go to 0 as Tau goes to 0.
+      HS = 10.*log(1.0+1.*TAUMAG)
       if (associated(fluxes%ustar_shelf) .and. associated(fluxes%frac_shelf_h)) then
         if (fluxes%frac_shelf_h(i,j) > 0.0) &
           U_Star = (1.0 - fluxes%frac_shelf_h(i,j)) * U_star + &
@@ -454,7 +507,47 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
           absf = sqrt(CS%omega_frac*4.0*CS%omega**2 + (1.0-CS%omega_frac)*absf**2)
       endif
 
-      mech_TKE(i) = (dt*CS%mstar*GV%Rho0)*((U_Star**3))
+      EkmanLength=CS%ekman_scale_coef*U_Star/(absf(i)+1e-8)
+      MonObLength=U_Star**3/(buoyflux(i,j,1)+1.e-10)
+      !LimitLength=EkmanLength
+      !if (MonObLength.ge.0.0)then
+      !   LimitLength=min(EkmanLength,MonObLength)
+      !endif
+      pRef = 0.
+      do k=1,SZK_(G)
+         pres_1D(k) = pRef
+         Temp_1D(k) = T(i,k)
+         Salt_1D(k) = S(i,k)
+      enddo
+      call calculate_density(Temp_1D, Salt_1D, pres_1D, rho_1D, 1, SZK_(G), EOS)
+      ! N2 (can be negative) and N (non-negative) on interfaces.
+      ! deltaRho is non-local rho difference used for bulk Richardson number.
+      ! N_1d is local N (with floor) used for unresolved shear calculation.
+      do k = 1, SZK_(G)
+         km1 = max(1, k-1)
+         N2_1d(k)    = (GoRho * (rho_1D(k) - rho_1D(km1)) ) / &
+              ((0.5*(h(i,km1) + h(i,k))+GV%H_subroundoff)*GV%H_to_m)
+         N_1d(k)     = sqrt( max( N2_1d(k), 0.) )
+      enddo
+      N2_1d(SZK_(G)+1 ) = 0.0
+      N_1d(SZK_(G)+1 )  = 0.0
+
+      if (.not.CS%SeparateTKE) then
+        mech_TKE(i) = (dt*CS%mstar*GV%Rho0)*((U_Star**3))
+        TKE_wi(i) = 0.0
+        TKE_wb(i) = 0.0
+        TKE_lt(i) = 0.0
+      else
+        mech_TKE(i) = 0.0
+        !If MO>0 MO/Ek=sig in MO to get phi to divide u_star by.
+        TKE_wi(i)= (dt*CS%mstar_wi*GV%Rho0)*((U_Star)**3)
+        TKE_wb(i)= (dt*CS%mstar_wb*GV%Rho0)*((U_Star**3))
+        TKE_lt(i)= (dt*CS%mstar_lt*GV%Rho0)*((U_Star**3))
+      endif
+      !print*,'Mech',mech_tke(i)
+      !print*,'Wi',tke_wi(i)
+      !print*,'WB',tke_wb(i)
+      !print*,'LT',tke_lt(i)
       conv_PErel(i) = 0.0
 
       if (CS%TKE_diagnostics) then
@@ -470,8 +563,21 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
       endif
 
       if (TKE_forced(i,j,1) <= 0.0) then
-        mech_TKE(i) = mech_TKE(i) + TKE_forced(i,j,1)
-        if (mech_TKE(i) < 0.0) mech_TKE(i) = 0.0
+        if ( CS%SeparateTKE ) then
+        !   TKE_wb(i) = TKE_wb(i) + TKE_forced(i,j,1)
+        !   if (TKE_wb(i).lt.0.) then
+        !     tke_wi(i)=tke_wi(i)+tke_wb(i)
+        !     tke_wb(i)=0.
+        !   endif
+        !   if (TKE_wi(i).lt.0.) then
+        !     tke_lt(i)=tke_lt(i)+tke_wi(i)
+        !     tke_wi(i)=0.0
+        !   endif
+        !   if (TKE_lt(i).lt.0.) tke_lt(i)=0.0
+        else
+          mech_TKE(i) = mech_TKE(i) + TKE_forced(i,j,1)
+          if (mech_TKE(i) < 0.0) mech_TKE(i) = 0.0
+        endif
       else
         conv_PErel(i) = conv_PErel(i) + TKE_forced(i,j,1)
       endif
@@ -532,13 +638,51 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
         ! different rates.  The following form is often used for mechanical
         ! stirring from the surface, perhaps due to breaking surface gravity
         ! waves and wind-driven turbulence.
-        Idecay_len_TKE(i) = (CS%TKE_decay * absf(i) / U_Star) * GV%H_to_m
+         TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + TKE_lt(i) + &
+              CS%wstar_ustar_coef*conv_PErel(i)
+         !print*,k,tke_here
+         if (TKE_here > 0.0) then
+            ! But here we might have to distinguish
+            
+            vstar = CS%vstar_scale_coef * (I_dtmrho*TKE_here)**C1_3
+         else
+            vstar = 0.0
+         endif
+
+         IEkmanLength=absf(i)/u_star
+         IBuoyLength=N_1d(k)/u_star
+         IMonObLength=(buoyflux(i,j,1))/(U_Star**3)
+         ILimitLength=max(0.,IMonObLength)
+
+         !print*,IekmanLength,Ibuoylength,imonoblength
+
+         Idecay_len_TKE(i) =  (CS%TKE_decay * absf(i) / U_Star) * GV%H_to_m
+         Idecay_len_wi_TKE(i) = (CS%TKE_decay_wi*IEkmanLength) * GV%H_to_m
+         Idecay_len_wb_TKE(i) = (CS%TKE_decay_wi*IEkmanLength+&
+                                 CS%TKE_decay_wb*ILimitLength) * GV%H_to_m
+         Idecay_len_lt_TKE(i) = (CS%TKE_decay_lt*IBuoyLength) * GV%H_to_m
+
         exp_kh = 1.0
         if (Idecay_len_TKE(i) > 0.0) exp_kh = exp(-h(i,k-1)*Idecay_len_TKE(i))
         if (CS%TKE_diagnostics) CS%diag_TKE_mech_decay(i,j) = &
           CS%diag_TKE_mech_decay(i,j) + (exp_kh-1.0) * mech_TKE(i) * IdtdR0
         mech_TKE(i) = mech_TKE(i) * exp_kh
+ 
+        if(CS%SeparateTKE) then
+          exp_kh = 1.0
+          if (Idecay_len_wi_TKE(i) > 0.0) exp_kh = exp(-h(i,k-1)*Idecay_len_wi_TKE(i))
+!          exp_kh = 1.-h(i,k-1)*Idecay_len_wi_TKE(i)
+          TKE_wi(i) = max(0.,TKE_wi(i) * exp_kh)
 
+          exp_kh = 1.0
+          if (Idecay_len_wb_TKE(i) > 0.0) exp_kh = exp(-h(i,k-1)*Idecay_len_wb_TKE(i))
+!          exp_kh = 1. - h(i,k-1)*Idecay_len_wb_TKE(i)
+          TKE_wb(i) = max(0.,TKE_wb(i) * exp_kh)
+
+          exp_kh = 1.0
+          if (Idecay_len_lt_TKE(i) > 0.0) exp_kh = exp(-h(i,k-1)*Idecay_len_lt_TKE(i))
+          TKE_lt(i) = TKE_lt(i) * exp_kh
+       endif
 
         !   Accumulate any convectively released potential energy to contribute
         ! to wstar and to drive penetrating convection.
@@ -564,8 +708,13 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
         endif
         if (debug) nstar_k(K) = nstar_FC
 
-        tot_TKE = mech_TKE(i) + nstar_FC * conv_PErel(i)
-
+        if (.not.CS%SeparateTKE) then
+          tot_TKE = mech_TKE(i) + nstar_FC * conv_PErel(i)
+        else
+          tot_TKE = mech_TKE(i) + nstar_FC * conv_PErel(i) + &
+                    TKE_wi(i) + TKE_wb(i) + TKE_lt(i)
+        endif
+        
         !   For each interior interface, first discard the TKE to account for
         ! mixing of shortwave radiation through the next denser cell.
         if (TKE_forced(i,j,k) < 0.0) then
@@ -580,6 +729,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                       (CS%nstar-nstar_FC) * conv_PErel(i) * IdtdR0
             endif
             tot_TKE = 0.0 ; mech_TKE(i) = 0.0 ; conv_PErel(i) = 0.0
+            TKE_wi(i) = 0.0 ; TKE_wb(i) = 0.0 ; TKE_lt(i) = 0.0
           else
             ! Reduce the mechanical and convective TKE proportionately.
             TKE_reduc = (tot_TKE + TKE_forced(i,j,k)) / tot_TKE
@@ -590,7 +740,11 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                   (1.0-TKE_reduc)*(CS%nstar-nstar_FC) * conv_PErel(i) * IdtdR0
             endif
             tot_TKE = TKE_reduc*tot_TKE   ! = tot_TKE + TKE_forced(i,j,k)
-            mech_TKE(i) = TKE_reduc*mech_TKE(i)
+            !Don't need to distinuish if separateTKE due to being 0.
+            mech_TKE(i) = TKE_reduc * mech_TKE(i)
+            TKE_wi(i)   = TKE_reduc * TKE_wi(i)
+            TKE_wb(i)   = TKE_reduc * TKE_wb(i)
+            TKE_lt(i)   = TKE_reduc * TKE_lt(i)
             conv_PErel(i) = TKE_reduc*conv_PErel(i)
           endif
         endif
@@ -613,10 +767,12 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
         Convectively_stable = ( 0.0 <= &
           ( (dT_to_dColHt(i,k) + dT_to_dColHt(i,k-1) ) * (T0(k-1)-T0(k)) + &
             (dS_to_dColHt(i,k) + dS_to_dColHt(i,k-1) ) * (S0(k-1)-S0(k)) ) )
-
-        if ((mech_TKE(i) + conv_PErel(i)) <= 0.0 .and. Convectively_stable) then
+        !Do not need to distinguish for if tke is separated b/c will be TKE_xx will be 0.0 if not
+        if ((mech_TKE(i) +TKE_wi(i) + TKE_wb(i) + TKE_lt(i) + conv_PErel(i)) <= 0.0 &
+             .and. Convectively_stable) then
           ! Energy is already exhausted, so set Kd = 0 and cycle or exit?
           tot_TKE = 0.0 ; mech_TKE(i) = 0.0 ; conv_PErel(i) = 0.0
+          TKE_wi(i) = 0.0 ; TKE_wb(i) = 0.0 ; TKE_lt(i) = 0.0
           Kd(i,K) = 0.0 ; Kddt_h(K) = 0.0
           sfc_disconnect = .true.
           ! if (.not.debug) exit
@@ -677,11 +833,28 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
           ! on how much energy is available.  mech_TKE might be negative due to
           ! contributions from TKE_forced.
           h_tt = htot(i) + h_tt_min
-          TKE_here = mech_TKE(i) + CS%wstar_ustar_coef*conv_PErel(i)
+          ! Again, don't need to distinguish since TKE_xx will be 0 if not separated.
+          TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + TKE_lt(i) + &
+                     CS%wstar_ustar_coef*conv_PErel(i)
           if (TKE_here > 0.0) then
             vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
-            Kd_guess0 = vstar * vonKar * ((h_tt*hb_hs(i,K))*vstar) / &
-                ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+            ! But here we might have to distinguish
+            EkmanLength=CS%ekman_scale_coef*vstar/(absf(i)+1e-8)
+            LimitLength=EkmanLength
+            if (CS%mixinglengthchoice.eq.1) then
+               MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
+                    ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+            elseif (CS%mixinglengthchoice.eq.2) then
+               MixLength = (h_tt*hb_hs(i,K)) / &
+                    ((h_tt/LimitLength) + 1.)
+            elseif (CS%mixinglengthchoice.eq.3) then
+               MixLength = (h_tt*hb_hs(i,K)) / &
+                    ((h_tt/LimitLength) + 1.)              
+               BuoyLength=vstar/max(1.e-12,N_1d(k))
+               MixLength=min(MixLength,BuoyLength)
+            endif
+
+            Kd_guess0 = vstar * vonKar * MixLength
           else
             vstar = 0.0 ; Kd_guess0 = 0.0
           endif
@@ -701,11 +874,29 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             ! This column is convectively unstable.
             if (PE_chg_max <= 0.0) then
               ! Does MKE_src need to be included in the calculation of vstar here?
-              TKE_here = mech_TKE(i) + CS%wstar_ustar_coef*(conv_PErel(i)-PE_chg_max)
+              !--
+              !Again, do not need to distinguish betwen TKE_xx, will be 0 if not used
+              TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + TKE_lt(i) + &
+                         CS%wstar_ustar_coef*(conv_PErel(i)-PE_chg_max)
               if (TKE_here > 0.0) then
                 vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
-                Kd(i,k) = vstar * vonKar * ((h_tt*hb_hs(i,K))*vstar) / &
-                    ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+                !Here we might have to distinguish
+                EkmanLength=CS%ekman_scale_coef*vstar/(absf(i)+1e-8)
+                LimitLength=EkmanLength
+                if (CS%mixinglengthchoice.eq.1) then
+                   MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
+                        ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+                elseif (CS%mixinglengthchoice.eq.2) then
+                   MixLength = (h_tt*hb_hs(i,K)) / &
+                        ((h_tt/LimitLength) + 1.)
+                elseif (CS%mixinglengthchoice.eq.3) then
+                   MixLength = (h_tt*hb_hs(i,K)) / &
+                        ((h_tt/LimitLength) + 1.)              
+                   BuoyLength=vstar/max(1.e-12,N_1d(k))
+                   MixLength=min(MixLength,BuoyLength)
+                endif
+               
+                Kd(i,k) = vstar * vonKar * MixLength
               else
                 vstar = 0.0 ; Kd(i,k) = 0.0
               endif
@@ -754,6 +945,9 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             endif
             tot_TKE = TKE_reduc*tot_TKE
             mech_TKE(i) = TKE_reduc*(mech_TKE(i) + MKE_src)
+            TKE_wi(i) = TKE_reduc * TKE_wi(i)
+            TKE_wb(i) = TKE_reduc * TKE_wb(i)
+            TKE_lt(i) = TKE_reduc * TKE_lt(i)            
             conv_PErel(i) = TKE_reduc*conv_PErel(i)
             if (sfc_connected(i)) CS%ML_depth(i,J) = CS%ML_depth(i,J) + &
                  GV%H_to_m * h(i,k)
@@ -761,6 +955,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             ! This can arise if nstar_FC = 0.
             Kd(i,k) = 0.0 ; Kddt_h(K) = 0.0
             tot_TKE = 0.0 ; conv_PErel(i) = 0.0 ; mech_TKE(i) = 0.0
+            TKE_wi(i) = 0.0; TKE_wb(i) = 0.0 ; TKE_lt(i) = 0.0
             sfc_disconnect = .true.
           else
             ! There is not enough energy to support the mixing, so reduce the
@@ -847,6 +1042,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             if (sfc_connected(i)) CS%ML_depth(i,J) = CS%ML_depth(i,J) + &
                  (PE_chg / PE_chg_g0) * GV%H_to_m * h(i,k)
             tot_TKE = 0.0 ; mech_TKE(i) = 0.0 ; conv_PErel(i) = 0.0
+            tke_wi(i) = 0.0 ; tke_wb(i) = 0.0 ; tke_lt(i) = 0.0
             sfc_disconnect = .true.
           endif
 
@@ -1163,10 +1359,23 @@ subroutine energetic_PBL_init(Time, G, GV, param_file, diag, CS)
 
 ! Set default, read and log parameters
   call log_version(param_file, mod, version, "")
-
   call get_param(param_file, mod, "MSTAR", CS%mstar, &
                  "The ratio of the friction velocity cubed to the TKE \n"//&
                  "input to the mixed layer.", "units=nondim", default=1.2)
+  call get_param(param_file, mod, "SEPARATE_TKE", CS%SeparateTKE,&
+                 "Logical to determine if the type of TKE in EPBL is \n"//&
+                 "distinguised.",default=.false.)
+  call get_param(param_file, mod, "MIXING_CHOICE", CS%MixingLengthChoice,&
+                 "Method for picking mixing length...",default=1)
+  call get_param(param_file, mod, "MSTAR_WI", CS%mstar_wi, &
+                 "The ratio of the friction velocity cubed to the TKE \n"//&
+                 "input to the mixed layer.", "units=nondim", default=1.2)
+  call get_param(param_file, mod, "MSTAR_WB", CS%mstar_wb, &
+                 "Get some energy from wave breaking \n"//&
+                 "full description yet to come.", "units=nondim", default=0.0)
+  call get_param(param_file, mod, "MSTAR_LT", CS%mstar_lt, &
+                 "Get some energy from wave breaking \n"//&
+                 "full description yet to come.", "units=nondim", default=0.0)
   call get_param(param_file, mod, "NSTAR", CS%nstar, &
                  "The portion of the buoyant potential energy imparted by \n"//&
                  "surface fluxes that is available to drive entrainment \n"//&
@@ -1181,6 +1390,19 @@ subroutine energetic_PBL_init(Time, G, GV, param_file, diag, CS)
                  "TKE_DECAY relates the vertical rate of decay of the \n"//&
                  "TKE available for mechanical entrainment to the natural \n"//&
                  "Ekman depth.", units="nondim", default=2.5)
+  call get_param(param_file, mod, "TKE_DECAY_WI", CS%TKE_decay_wi, &
+                 "TKE_DECAY relates the vertical rate of decay of the \n"//&
+                 "TKE available for mechanical entrainment to the natural \n"//&
+                 "Ekman depth.", units="nondim", default=2.5)
+  call get_param(param_file, mod, "TKE_DECAY_WB", CS%TKE_decay_wb, &
+                 "TKE_DECAY_WAVEBREAK does something related to decaying \n"//&
+                 "TKE available for mechanical entrainment based on the  \n"//&
+                 "wave conditions.", units="nondim", default=0.0)
+  call get_param(param_file, mod, "TKE_DECAY_LT", CS%TKE_decay_lt, &
+                 "TKE_DECAY_LANGMUIR does something related to decaying \n"//&
+                 "TKE available for mechanical entrainment based on the  \n"//&
+                 "wave conditions.", units="nondim", default=0.0)
+
 !  call get_param(param_file, mod, "HMIX_MIN", CS%Hmix_min, &
 !                 "The minimum mixed layer depth if the mixed layer depth \n"//&
 !                 "is determined dynamically.", units="m", default=0.0)
