@@ -76,6 +76,7 @@ use MOM_variables, only : thermo_var_ptrs
 use MOM_verticalGrid, only : verticalGrid_type
 use MOM_EOS, only : EOS_type, calculate_density!, calculate_density_derivs
 ! use MOM_EOS, only : calculate_2_densities
+use MOM_wave_interface, only: wave_parameters_CS
 
 implicit none ; private
 
@@ -156,7 +157,7 @@ integer :: num_msg = 0, max_msg = 2
 contains
 
 subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
-                         dSV_dT, dSV_dS, TKE_forced, BuoyFlux, EOS, 
+                         dSV_dT, dSV_dS, TKE_forced, BuoyFlux, EOS, h_est,waves,&
                          dt_diag, last_call, dT_expected, dS_expected)
   type(ocean_grid_type),                     intent(inout) :: G
   type(verticalGrid_type),                   intent(in)    :: GV
@@ -168,8 +169,11 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   real,                                      intent(in)    :: dt
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(out) :: Kd_int
   type(energetic_PBL_CS),                    pointer       :: CS
+  real,                                      intent(inout) :: H_EST
   real,                            optional, intent(in)    :: dt_diag
   logical,                         optional, intent(in)    :: last_call
+  type(wave_parameters_CS), pointer, optional :: Waves !<Wave CS
+
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), &
                                    optional, intent(out)   :: dT_expected, dS_expected
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)+1), intent(in)    :: buoyFlux !< Surface buoyancy flux (m2/s3)
@@ -389,8 +393,15 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   real, dimension(SZK_(GV)) :: nstar_k
   integer, dimension(SZK_(GV)) :: num_itts
 
+  real :: vstarLT, MixLengthLT, Enhance
+  real :: USy20pct ,USx20pct, H20pct
+  real :: CMNFACT, wavedir, currentdir
+  integer :: b, ksfc
+
   integer :: i, j, k, is, ie, js, je, nz, itt, max_itt
 
+  MixLengthLT = 10.0
+  
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
 
   if (.not. associated(CS)) call MOM_error(FATAL, "energetic_PBL: "//&
@@ -412,7 +423,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   write_diags = .true. ; if (present(last_call)) write_diags = last_call
   max_itt = 20
 
-  h_tt_min = 0.0
+  h_tt_min = 0.02
   vonKar = 0.41
   I_dtrho = 0.0 ; if (dt*GV%Rho0 > 0.0) I_dtrho = 1.0 / (dt*GV%Rho0)
   ! Determine whether to zero out diagnostics before accumulation.
@@ -540,9 +551,14 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
       else
         mech_TKE(i) = 0.0
         !If MO>0 MO/Ek=sig in MO to get phi to divide u_star by.
-        TKE_wi(i)= (dt*CS%mstar_wi*GV%Rho0)*((U_Star)**3)
-        TKE_wb(i)= (dt*CS%mstar_wb*GV%Rho0)*((U_Star**3))
-        TKE_lt(i)= (dt*CS%mstar_lt*GV%Rho0)*((U_Star**3))
+        TKE_wi(i)= (dt*CS%mstar_wi*GV%Rho0)*(U_Star**3)
+        TKE_wb(i)= (dt*CS%mstar_wb*GV%Rho0)*(U_Star**3)
+        if (associated(waves)) then
+           TKE_lt(i)= (dt*CS%mstar_lt*GV%Rho0)*&
+                (U_Star**2*sqrt(waves%us0_x(i,j)**2+waves%us0_y(i,j)**2))
+        else
+           TKE_lt(i)= (dt*CS%mstar_lt*GV%Rho0)*(U_Star**3)
+        endif
       endif
       !print*,'Mech',mech_tke(i)
       !print*,'Wi',tke_wi(i)
@@ -590,15 +606,33 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
         nstar_k(:) = 0.0 ; nstar_k(1) = CS%nstar
       endif
 
-      h_sum(i) = H_neglect
-      do k=1,nz ; h_sum(i) = h_sum(i) + h(i,k) ; enddo
-      I_hs = 0.0 ; if (h_sum(i) > 0.0) I_hs = 1.0 / h_sum(i)
+      if (h_est.lt.1.) then
+         h_sum(i) = H_neglect
+         do k=1,nz ; 
+            h_sum(i) = h_sum(i) + h(i,k) ; 
+         enddo
+         I_hs = 0.0 ; if (h_sum(i) > 0.0) I_hs = 1.0 / h_sum(i)
+         
+         h_bot(i) = 0.0 ; hb_hs(i,nz+1) = 0.0
+         do k=nz,1,-1
+            h_bot(i) = h_bot(i) + h(i,k)
+            hb_hs(i,K) = GV%H_to_m * (h_bot(i)*I_hs)**2
+         enddo
+      else
+         I_hs=1.0/h_est
+         h_sum(i) = 0.0
+         h_bot(i) = 0.0 ; hb_hs(i,1:nz+1) = 0.0
+         ksfc=1
+         do k=2,nz
+            h_sum(i)=h_sum(i)+h(i,k)
+            h_bot(i) = max(0.0,h_est - h_sum(i))
+            if (h_est.gt.h_sum(i) .and. ksfc.eq.1) then
+               ksfc=k
+            endif
+            hb_hs(i,K) = GV%H_to_m * (h_bot(i)*I_hs)**(2.)
+         enddo
+      endif
 
-      h_bot(i) = 0.0 ; hb_hs(i,nz+1) = 0.0
-      do k=nz,1,-1
-        h_bot(i) = h_bot(i) + h(i,k)
-        hb_hs(i,K) = GV%H_to_m * (h_bot(i)*I_hs)
-      enddo
 !    endif ; enddo
 
     ! Note the outer i-loop and inner k-loop loop order!!!
@@ -629,7 +663,6 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
       htot(i) = h(i,1)
       uhtot(i) = u(i,1)*h(i,1)
       vhtot(i) = v(i,1)*h(i,1)
-
       do K=2,nz
         ! Apply dissipation to the TKE, here applied as an exponential decay
         ! due to 3-d turbulent energy being lost to inefficient rotational modes.
@@ -638,13 +671,11 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
         ! different rates.  The following form is often used for mechanical
         ! stirring from the surface, perhaps due to breaking surface gravity
         ! waves and wind-driven turbulence.
-         TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + TKE_lt(i) + &
+         TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + &
               CS%wstar_ustar_coef*conv_PErel(i)
-         !print*,k,tke_here
          if (TKE_here > 0.0) then
             ! But here we might have to distinguish
-            
-            vstar = CS%vstar_scale_coef * (I_dtmrho*TKE_here)**C1_3
+             vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
          else
             vstar = 0.0
          endif
@@ -667,7 +698,8 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
         if (CS%TKE_diagnostics) CS%diag_TKE_mech_decay(i,j) = &
           CS%diag_TKE_mech_decay(i,j) + (exp_kh-1.0) * mech_TKE(i) * IdtdR0
         mech_TKE(i) = mech_TKE(i) * exp_kh
- 
+        !BGR: hypothetical convective_perel decay
+        !conv_perel(i)=conv_perel(i)*exp(-h(i,k-1)/40.)
         if(CS%SeparateTKE) then
           exp_kh = 1.0
           if (Idecay_len_wi_TKE(i) > 0.0) exp_kh = exp(-h(i,k-1)*Idecay_len_wi_TKE(i))
@@ -712,7 +744,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
           tot_TKE = mech_TKE(i) + nstar_FC * conv_PErel(i)
         else
           tot_TKE = mech_TKE(i) + nstar_FC * conv_PErel(i) + &
-                    TKE_wi(i) + TKE_wb(i) + TKE_lt(i)
+                    TKE_wi(i) + TKE_wb(i)
         endif
         
         !   For each interior interface, first discard the TKE to account for
@@ -744,7 +776,6 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             mech_TKE(i) = TKE_reduc * mech_TKE(i)
             TKE_wi(i)   = TKE_reduc * TKE_wi(i)
             TKE_wb(i)   = TKE_reduc * TKE_wb(i)
-            TKE_lt(i)   = TKE_reduc * TKE_lt(i)
             conv_PErel(i) = TKE_reduc*conv_PErel(i)
           endif
         endif
@@ -834,10 +865,11 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
           ! contributions from TKE_forced.
           h_tt = htot(i) + h_tt_min
           ! Again, don't need to distinguish since TKE_xx will be 0 if not separated.
-          TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + TKE_lt(i) + &
+          TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + &
                      CS%wstar_ustar_coef*conv_PErel(i)
           if (TKE_here > 0.0) then
             vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
+            vstarLT = CS%vstar_scale_fac * (I_dtrho*TKE_LT(i))**C1_3
             ! But here we might have to distinguish
             EkmanLength=CS%ekman_scale_coef*vstar/(absf(i)+1e-8)
             LimitLength=EkmanLength
@@ -848,13 +880,47 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                MixLength = (h_tt*hb_hs(i,K)) / &
                     ((h_tt/LimitLength) + 1.)
             elseif (CS%mixinglengthchoice.eq.3) then
-               MixLength = (h_tt*hb_hs(i,K)) / &
-                    ((h_tt/LimitLength) + 1.)              
-               BuoyLength=vstar/max(1.e-12,N_1d(k))
+               MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
+                    ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+               BuoyLength=max(vstar,1.e-14)/max(1.e-12,N_1d(k))
                MixLength=min(MixLength,BuoyLength)
             endif
-
-            Kd_guess0 = vstar * vonKar * MixLength
+            if (associated(waves)) then
+               !Brandon You are adding Langmuir number calculation
+                USy20pct = 0.0;USx20pct = 0.0;
+                H20pct=min(-0.1,-h_est*0.2);
+                do b=1,WAVES%NumBands
+                   CMNFACT = (1.0 - EXP(H20pct*2*WAVES%WaveNum_Cen(b))) &
+                        / (0.0-H20pct) / (2*WAVES%WaveNum_Cen(b))
+                   USy20pct = USy20pct + 0.5 * ( WAVES%STKy0(i,j,b) &
+                        + WAVES%STKy0(i,j-1,b) ) * CMNFACT
+                   USx20pct = USx20pct + 0.5 * ( WAVES%STKx0(i,j,b) &
+                        + WAVES%STKx0(i-1,j,b) ) * CMNFACT
+                enddo
+                wavedir=atan2(USy20pct,USx20pct)
+                !! Lagrangian current shear (Reynolds stress direction approx)
+                if (WAVES%StokesMixing.or.Waves%LagrangianMixing) then
+                   currentdir= atan2(0.5*(waves%us_y(i,j,1)+waves%us_y(i,j-1,1) - &
+                     waves%us_y(i,j,ksfc)-waves%us_y(i,j-1,ksfc))              &
+                     +v_3d(i,j,1)-v_3d(i,j,ksfc),                                &
+                     0.5*(waves%us_x(i,j,1)+waves%us_x(i-1,j,1) -              &
+                     waves%us_x(i,j,ksfc)-waves%us_x(i-1,j,ksfc))               &
+                     +u_3d(i,j,1)-u_3d(i,j,ksfc))
+                else
+                   currentdir= atan2(v_3d(i,j,1)-v_3d(i,j,ksfc),          &
+                        u_3d(i,j,1)-u_3d(i,j,ksfc))
+                endif
+                WAVES%LangNum(i,j) = sqrt(u_star /      &
+                     max(1.e-10,sqrt(USx20pct**2 + USy20pct**2))) &
+                     *sqrt(1./max(0.000001,cos(wavedir-currentdir)))
+                Enhance=(1.+1./WAVES%LangNum(i,j))
+                print*,WAVES%LangNum(i,j),Enhance
+            else
+               Enhance=1.
+            endif
+            Kd_guess0 = vstar * vonKar * MixLength + &
+                 vstarLT * vonkar * MixLength*Enhance
+     
           else
             vstar = 0.0 ; Kd_guess0 = 0.0
           endif
@@ -876,27 +942,16 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
               ! Does MKE_src need to be included in the calculation of vstar here?
               !--
               !Again, do not need to distinguish betwen TKE_xx, will be 0 if not used
-              TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + TKE_lt(i) + &
+              TKE_here = mech_TKE(i) + TKE_wi(i) + TKE_wb(i) + &
                          CS%wstar_ustar_coef*(conv_PErel(i)-PE_chg_max)
               if (TKE_here > 0.0) then
                 vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
+                vstarLT = CS%vstar_scale_fac * (I_dtrho*TKE_LT(i))**C1_3
                 !Here we might have to distinguish
-                EkmanLength=CS%ekman_scale_coef*vstar/(absf(i)+1e-8)
-                LimitLength=EkmanLength
-                if (CS%mixinglengthchoice.eq.1) then
-                   MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
-                        ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
-                elseif (CS%mixinglengthchoice.eq.2) then
-                   MixLength = (h_tt*hb_hs(i,K)) / &
-                        ((h_tt/LimitLength) + 1.)
-                elseif (CS%mixinglengthchoice.eq.3) then
-                   MixLength = (h_tt*hb_hs(i,K)) / &
-                        ((h_tt/LimitLength) + 1.)              
-                   BuoyLength=vstar/max(1.e-12,N_1d(k))
-                   MixLength=min(MixLength,BuoyLength)
-                endif
-               
-                Kd(i,k) = vstar * vonKar * MixLength
+                MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
+                     ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+                Kd(i,k) = vstar * vonKar * MixLength + &
+                     vstarLT*vonKar*MixLength
               else
                 vstar = 0.0 ; Kd(i,k) = 0.0
               endif
@@ -917,6 +972,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
               ! The energy change does not vary monotonically with Kddt_h.  Find the maximum?
               Kd(i,k) = Kd_guess0 ; dPE_conv = PE_chg_g0
             endif
+            !BR
             conv_PErel(i) = conv_PErel(i) - dPE_conv
             mech_TKE(i) = mech_TKE(i) + MKE_src
             if (CS%TKE_diagnostics) then
@@ -933,7 +989,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             Kddt_h(K) = Kddt_h_g0
 
             ! Reduce the mechanical and convective TKE proportionately.
-            tot_TKE = tot_TKE + MKE_src
+            tot_TKE = tot_TKE + MKE_src+tke_lt(i)
             TKE_reduc = 0.0   ! tot_TKE could be 0 if Convectively_stable is false.
             if (tot_TKE > 0.0) TKE_reduc = (tot_TKE - PE_chg_g0) / tot_TKE
 
@@ -947,7 +1003,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             mech_TKE(i) = TKE_reduc*(mech_TKE(i) + MKE_src)
             TKE_wi(i) = TKE_reduc * TKE_wi(i)
             TKE_wb(i) = TKE_reduc * TKE_wb(i)
-            TKE_lt(i) = TKE_reduc * TKE_lt(i)            
+            TKE_lt(i) = TKE_reduc * TKE_lt(i)      
             conv_PErel(i) = TKE_reduc*conv_PErel(i)
             if (sfc_connected(i)) CS%ML_depth(i,J) = CS%ML_depth(i,J) + &
                  GV%H_to_m * h(i,k)

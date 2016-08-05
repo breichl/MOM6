@@ -147,7 +147,7 @@
       end if
 
       EpsOverTke  = eps(i)/tkeo(i)
-      prod        = ce1*EpsOverTke*P(i) + ce1*EpsOverTke*PV(i) !ce1 needs up
+      prod        = ce1*EpsOverTke*P(i) + 0.7*EpsOverTke*PV(i) !ce1 needs up
       buoyan      = ce3*EpsOverTke*B(i)
       diss        = ce2*EpsOverTke*eps(i)
 

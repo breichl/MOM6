@@ -44,7 +44,7 @@
 ! \end{equation}
 !
 ! !USES:
-   use turbulence,   only: P,B
+   use turbulence,   only: P,B, PV
    use turbulence,   only: tke,tkeo,k_min,eps,L
    use turbulence,   only: q2over2_bc, k_ubc, k_lbc, ubc_type, lbc_type
    use turbulence,   only: sq
@@ -96,17 +96,15 @@
 !
 
    tkeo=tke
-
    do i=1,nlev-1
 
 !     compute diffusivity
       avh(i) = sq*sqrt( 2.*tke(i) )*L(i)
 
 !     compute production terms in q^2/2-equation
-      prod     = P(i)
+      prod     = P(i)+PV(i)
       buoyan   = B(i)
       diss     = eps(i)
-
 
       if (prod+buoyan.gt.0) then
          Qsour(i)  = prod+buoyan

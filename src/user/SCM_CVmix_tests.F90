@@ -258,8 +258,10 @@ subroutine SCM_CVmix_tests_buoyancy_forcing(state, fluxes, day, G, CS)
     ! therefore must convert to W/m2 by multiplying
     ! by Rho0*Cp
       fluxes%sw(i,J) = CS%Max_sw * max(0.0,cos(2*PI*     &
-           time_type_to_real(DAY)/86400.)) * CS%RHO0 * fluxes%C_p
+           (time_type_to_real(DAY)/86400.-0.5))) * CS%RHO0 * fluxes%C_p
     enddo; enddo
+    print*,time_type_to_real(DAY)/86400,fluxes%sw(3,3)
+    print*,cs%rho0,fluxes%c_p,CS%Max_sw * CS%RHO0 * fluxes%C_p
   endif
 
 end subroutine SCM_CVmix_tests_buoyancy_forcing

@@ -436,9 +436,9 @@
    e1=1.8
    e2=1.33
    e3=1.8
-   e6=4!Kantha and Clayson
-   sq=0.2
-   sl=0.2
+   e6=10.0!Kantha and Clayson
+   sq=0.4
+   sl=0.4
    my_length=1
    new_constr=.false.
 
@@ -2534,17 +2534,21 @@
    do i=0,nlev
       x        =  sqrt(tke(i))*L(i)
 !     momentum
-      num(i)   =  max(1.e-7,cmue1(i)*x)
+      num(i)   =  max(1.e-9,cmue1(i)*x)
 !     heat
-      nuh(i)   =  max(1.e-7,cmue2(i)*x)
+      nuh(i)   =  max(1.e-9,cmue2(i)*x)
 !     salinity
-      nus(i)   =  max(1.e-7,cmue2(i)*x)
+      nus(i)   =  max(1.e-9,cmue2(i)*x)
 !     Stokes momentum
-      numS(i) = max(1.e-7,cmue3(i)*x)
+      numS(i) = max(1.e-9,cmue3(i)*x)
    end do
    !TEMPORARY
-   !numS=0.0!num
+   numS=0.0!num
 
+   print*,'-----'
+   print*,num(nlev-1),nuh(nlev-1)
+   print*,cmue1(nlev-1),cmue2(nlev-1)
+   print*,tke(nlev-1),l(nlev-1)
    return
    end subroutine kolpran
 !EOC

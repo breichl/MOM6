@@ -15,8 +15,10 @@ use MOM_grid,          only : ocean_grid_type, isPointInCell
 use MOM_verticalGrid,  only : verticalGrid_type
 use MOM_wave_interface, only : Wave_parameters_CS
 use turbulence, only : init_turbulence, do_turbulence
-use turbulence, only : G_Kdm=>num, G_Kdt=>nuh, G_Kds=>nus, G_TKE=>tke, G_EPS=>eps, G_TKEo =>tkeo, G_Kdms=>numS
-use turbulence, only : G_l => l, G_cde=>cde, g_k_min=>k_min, g_eps_min=>eps_min
+use turbulence, only : G_Kdm=>num, G_Kdt=>nuh, G_Kds=>nus, G_Kdms=>numS
+use turbulence, only : G_TKE=>tke, G_EPS=>eps, G_TKEo =>tkeo, G_l => l
+use turbulence, only : G_kb=>kb, G_epsB =>epsb
+use turbulence, only : G_cde=>cde, g_k_min=>k_min, g_eps_min=>eps_min
 use mtridiagonal, only: init_tridiagonal
 implicit none ; private
 
@@ -38,10 +40,13 @@ type, public :: GOTM_CS ; private
   logical :: debug
 
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: TKE, TKEo
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: EPS, LenScale
+
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: EPS, LenScale, kb, epsb
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KV
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KT
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_,NKMEM_) :: KS
+  real ALLOCABLE_, dimension(NIMEMB_,NJMEM_,NKMEM_) :: Uo
+  real ALLOCABLE_, dimension(NIMEM_,NJMEMB_,NKMEM_) :: Vo
 
 
 end type GOTM_CS
@@ -93,11 +98,16 @@ logical function GOTM_init(paramFile, G, diag, Time, CS, passive)
   ALLOC_ (CS%TKE(is:Ie,js:je,nz+1)) ; CS%TKE(:,:,:) = g_k_min
   ALLOC_ (CS%TKEo(is:Ie,js:je,nz+1)) ; CS%TKEo(:,:,:) = g_k_min
   ALLOC_ (CS%EPS(is:Ie,js:je,nz+1)) ; CS%EPS(:,:,:) = g_eps_min
+  ALLOC_ (CS%epsb(is:Ie,js:je,nz+1)) ; CS%epsb(:,:,:) = g_eps_min
+  ALLOC_ (CS%kb(is:Ie,js:je,nz+1)) ; CS%kb(:,:,:) = g_k_min
   ALLOC_ (CS%LenScale(is:Ie,js:je,nz+1)) ; CS%LenScale(:,:,:) = max(1.e-8,g_cde*g_k_min**1.5/g_eps_min)
   
   ALLOC_ (CS%KV(is:Ie,js:je,nz+1)) ; CS%KV(:,:,:) = 1.E-6
   ALLOC_ (CS%KS(is:Ie,js:je,nz+1)) ; CS%KS(:,:,:) = 1.E-6
   ALLOC_ (CS%KT(is:Ie,js:je,nz+1)) ; CS%KT(:,:,:) = 1.E-6
+  ALLOC_ (CS%Uo(G%isdB:G%iedB,G%jsd:G%jed,nz)) ; CS%UO(:,:,:) = 0.0
+  ALLOC_ (CS%Vo(G%isd:G%ied,G%isdB:G%iedB,nz)) ; CS%VO(:,:,:) = 0.0
+
 
 end function GOTM_init
 
@@ -148,7 +158,8 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
   real, dimension( 3*G%ke )   :: Salt_1D
 
   real :: GoRho, pRef, Uabove,Ubelow,Vabove,Vbelow,&
-          uSabove, uSbelow, vSabove, vSbelow
+          uSabove, uSbelow, vSabove, vSbelow, &
+          uoabove,voabove,uobelow,vobelow
   real :: delH                 ! Thickness of a layer (m)
   real :: Dpt, DZ
   real :: Z0S
@@ -190,7 +201,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
         Dpt = 0.0
         PRef = 0.0
         !compute NN, compute SS
-        do k=1,G%ke
+        do k=2,G%ke
            kgotm = G%ke-k+1
            delH = h(i,j,k)*GV%H_to_m
            H_1d(k) = delH
@@ -220,8 +231,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
         
         ! compute in-situ density
         call calculate_density(Temp_1D, Salt_1D, pres_1D, rho_1D, 1, 3*G%ke, EOS)
-        
-        do k = 1, G%ke
+        do k = 2, G%ke
            km1 = max(1, k-1)
            kk = 3*(k-1)
            kgotm = G%ke-k+1
@@ -231,29 +241,36 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
                 
            ! C-grid average to get Uk and Vk on T-points.
            ! k is above, k+1 is below (relative to interface k)
-           Uabove  = 0.5*(u(i,j,k)+u(i-1,j,k))
-           Ubelow  = 0.5*(u(i,j,km1)+u(i-1,j,km1))
-           Vabove  = 0.5*(v(i,j,k)+v(i,j-1,k))
-           Vbelow  = 0.5*(v(i,j,km1)+v(i,j-1,km1))
+           Uabove  = 0.5*(u(i,j,km1)+u(i-1,j,km1))
+           Ubelow  = 0.5*(u(i,j,k)+u(i-1,j,k))
+           Vabove  = 0.5*(v(i,j,km1)+v(i,j-1,km1))
+           Vbelow  = 0.5*(v(i,j,k)+v(i,j-1,k))
+           UOabove  = 0.5*(CS%uo(i,j,km1)+CS%uo(i-1,j,km1))
+           UObelow  = 0.5*(CS%uo(i,j,k)+CS%uo(i-1,j,k))
+           VOabove  = 0.5*(CS%vo(i,j,km1)+CS%vo(i,j-1,km1))
+           VObelow  = 0.5*(CS%vo(i,j,k)+CS%vo(i,j-1,k))
            if (present(Waves).and.associated(Waves)) then
-              uSabove  = 0.5*(waves%us_x(i,j,k)+waves%us_x(i-1,j,k))
-              uSbelow  = 0.5*(waves%us_x(i,j,km1)+waves%us_x(i-1,j,km1))
-              vSabove  = 0.5*(waves%us_y(i,j,k)+waves%us_y(i,j-1,k))
-              vSbelow  = 0.5*(waves%us_y(i,j,km1)+waves%us_y(i,j-1,km1))
+              uSabove  = 0.5*(waves%us_x(i,j,km1)+waves%us_x(i-1,j,km1))
+              uSbelow  = 0.5*(waves%us_x(i,j,k)+waves%us_x(i-1,j,k))
+              vSabove  = 0.5*(waves%us_y(i,j,km1)+waves%us_y(i,j-1,km1))
+              vSbelow  = 0.5*(waves%us_y(i,j,k)+waves%us_y(i,j-1,k))
            else
               uSabove = 0.0
               uSbelow = 0.0
               vSabove = 0.0
               vSbelow = 0.0
            endif
-           S2_1d(kgotm) = ((Uabove-Ubelow)*(Uabove-Ubelow)  + &
-                (Vabove-Vbelow)*(Vabove-Vbelow)) / (dz*dz)
-           S2x_1d(kgotm) = (Uabove-Ubelow)*(Uabove-Ubelow) / (dz*dz)
-           S2y_1d(kgotm) = (Vabove-Vbelow)*(Vabove-Vbelow) / (dz*dz)
-           S2Stk_1d(kgotm) = ((uSabove-uSbelow)*(uSabove-uSbelow)  + &
-                (vSabove-vSbelow)*(vSabove-vSbelow)) / (dz*dz)           
+           ! S2x_1d(kgotm) = 0.5*((Uabove-Ubelow)*(Uabove-Uobelow) +&
+           !                      (Uabove-Ubelow)*(Uoabove-Ubelow) ) / (dz*dz)
+           ! S2y_1d(kgotm) = 0.5*((Vabove-Vbelow)*(Vabove-Vobelow) +&
+           !                      (Vabove-Vbelow)*(Voabove-Vbelow) ) / (dz*dz)
+           S2x_1d(kgotm) = ((Uabove-Ubelow)*(Uabove-Ubelow)) / (dz*dz)
+           S2y_1d(kgotm) = ((Vabove-Vbelow)*(Vabove-Vbelow)) / (dz*dz)
+           S2_1d(kgotm)=S2x_1d(kgotm)+S2y_1d(kgotm)
+
            S2xStk_1d(kgotm) = (uSabove-uSbelow)*(uSabove-uSbelow) / (dz*dz)
            S2yStk_1d(kgotm) = (vSabove-vSbelow)*(vSabove-vSbelow) / (dz*dz)
+           S2Stk_1d(kgotm)=S2xStk_1d(kgotm)+S2yStk_1d(kgotm)
         enddo
         N2_1d(0) = 0.0
         S2_1d(0) = 0.0
@@ -286,6 +303,8 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
            kgotm=G%ke-k+1
            !Fill GOTM arrays for time stepping
            g_TKE(kgotm) = CS%TKE(i,j,k)
+           g_epsb(kgotm) = CS%epsb(i,j,k)
+           g_kb(kgotm) = CS%kb(i,j,k)
            g_TKEo(kgotm) = CS%TKEo(i,j,k)
            g_EPS(kgotm) = CS%EPS(i,j,k)
            g_Kdm(kgotm) = CS%Kv(i,j,k)
@@ -319,7 +338,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
          endif
          CS%Kv(i,j,k) = g_Kdm(kgotm)
          if (associated(WAVES)) then
-            WAVES%KvS(i,j,k) = g_KdmS(kgotm)
+            WAVES%KvS(i,j,k) = 0.0!g_KdmS(kgotm)
          endif
          CS%Kt(i,j,k) = g_Kdt(kgotm)
          CS%Ks(i,j,k) = g_Kds(kgotm)
@@ -330,30 +349,36 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
          !   print*,k,'--------'
          !   print*,kt(i,j,k),kv(i,j,k),sqrt(u(i,j,k)**2+v(i,j,k)**2)
          !endif
-         CS%TKEo(i,j,k) = CS%TKE(i,j,k)
+         CS%TKEo(i,j,k) = g_TKEo(kgotm)
          CS%TKE(i,j,k) = g_TKE(kgotm)
          CS%EPS(i,j,k) = g_EPS(kgotm)
          CS%LenScale(i,j,k) = g_L(kgotm)
+         CS%epsb(i,j,k) = g_epsb(kgotm)
+         CS%kb(i,j,k) = g_kb(kgotm)
       enddo
     enddo ! i
   enddo ! j
-  !Brandon: Hacking to update HALO until properly resolved
-  if (associated(WAVES)) then
-     do i=G%isd,G%ied
-        do j=G%isd,G%ied
-           if (i.lt.G%isc) then
-              WAVES%KvS(i,j,:)=WAVES%KvS(G%isc,j,:)
-           elseif  (i.gt.G%iec) then
-              WAVES%KvS(i,j,:)=WAVES%KvS(G%iec,j,:)
-           endif
-           if (j.lt.G%jsc) then
-              WAVES%KvS(i,j,:)=WAVES%KvS(i,G%jsc,:)
-           elseif  (j.gt.G%jec) then
-              WAVES%KvS(i,j,:)=WAVES%KvS(G%jec,j,:)
-           endif
-        enddo
-     enddo
-  endif
+  CS%uo=u
+  CS%vo=v
+  
+  !Brandon: Hacking to update HALO until properly resolved 
+  !         (using periodic boundary in 1d tests)
+  ! if (associated(WAVES)) then
+  !    do i=G%isd,G%ied
+  !       do j=G%isd,G%ied
+  !          if (i.lt.G%isc) then
+  !             WAVES%KvS(i,j,:)=WAVES%KvS(G%isc,j,:)
+  !          elseif  (i.gt.G%iec) then
+  !             WAVES%KvS(i,j,:)=WAVES%KvS(G%iec,j,:)
+  !          endif
+  !          if (j.lt.G%jsc) then
+  !             WAVES%KvS(i,j,:)=WAVES%KvS(i,G%jsc,:)
+  !          elseif  (j.gt.G%jec) then
+  !             WAVES%KvS(i,j,:)=WAVES%KvS(G%jec,j,:)
+  !          endif
+  !       enddo
+  !    enddo
+  ! endif
 
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then
