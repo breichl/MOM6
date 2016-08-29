@@ -39,7 +39,7 @@ implicit none ; private
 #include <netcdf.inc>
 #endif
 
-public Calculate_cvmix_shear, cvmix_shear_init
+public Calculate_cvmix_shear, cvmix_shear_init, CVMix_shear_is_used
 
 type, public :: CVMix_shear_CS ! ; private
   logical :: use_LMD94, use_PP81
@@ -59,12 +59,12 @@ end type CVMix_shear_CS
 
 contains
 
-subroutine Calculate_cvmix_shear(u_in, v_in, h, tv, KH,  &
+subroutine Calculate_cvmix_shear(u_H, v_H, h, tv, KH,  &
                                  KM, G, GV, CS )
   type(ocean_grid_type),                      intent(in)    :: G
   type(verticalGrid_type),                    intent(in)    :: GV
-  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),   intent(in)    :: u_in
-  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),   intent(in)    :: v_in
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),   intent(in)    :: u_H
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),   intent(in)    :: v_H
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)),   intent(in)    :: h
   type(thermo_var_ptrs),                      intent(in)    :: tv
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)+1), intent(out)   :: KH
@@ -108,6 +108,7 @@ subroutine Calculate_cvmix_shear(u_in, v_in, h, tv, KH,  &
 
       ! Richardson number computed for each cell in a column.
       pRef = 0.
+      Ri_Grad(:)=1.e8
       do k=1,G%ke
 
         ! pressure, temp, and saln for EOS
@@ -137,25 +138,22 @@ subroutine Calculate_cvmix_shear(u_in, v_in, h, tv, KH,  &
       do k = 1, G%ke
         km1 = max(1, k-1)
         kk = 2*(k-1)
-        DU = (u_in(i,j,k)+u_in(i-1,j,k))-(u_in(i,j,km1)+u_in(i-1,j,km1))
-        DV = (v_in(i,j,k)+v_in(i,j-1,k))-(v_in(i,j,km1)+v_in(i,j-1,km1))
+        DU = (u_h(i,j,k))-(u_h(i,j,km1))
+        DV = (v_h(i,j,k))-(v_h(i,j,km1))
         DRHO = (GoRho * (rho_1D(kk+1) - rho_1D(kk+2)) )
         DZ = ((0.5*(h(i,j,km1) + h(i,j,k))+GV%H_subroundoff)*GV%H_to_m)
         N2 = DRHO/DZ
         S2 = (DU*DU+DV*DV)/(DZ*DZ) 
-        Ri_Grad(G%ke) = N2/max(S2,1.e-8)
+        Ri_Grad(k) = max(0.,N2)/max(S2,1.e-16)
       enddo
-      Ri_Grad(G%ke+1) = 1.e8
 
       call  cvmix_coeffs_shear(Mdiff_out=KM(i,j,:), &
                                    Tdiff_out=KH(i,j,:), & 
                                    RICH=Ri_Grad, &
                                    nlev=G%ke,    &
                                    max_nlev=G%ke)
-
-
-    ENDDO;
-  ENDDO;
+    enddo;
+  enddo;
 
   return
 
@@ -220,14 +218,12 @@ logical function cvmix_shear_init(Time, G, GV, param_file, diag, CS)
            ' please disable all but one scheme to proceed.')
   endif
   cvmix_shear_init=(CS%use_PP81.or.CS%use_LMD94)
-  print*,CS%use_LMD94
-  stop
 ! Forego remainder of initialization if not using this scheme
   if (.not. cvmix_shear_init) return
   call get_param(param_file, mod, "NU_ZERO", CS%Nu_Zero, &
                  "Leading coefficient in KPP shear mixing.", &
                  units="nondim", default=5.e-3)
-  call get_param(param_file, mod, "RI_ZERO", CS%Nu_Zero, &
+  call get_param(param_file, mod, "RI_ZERO", CS%Ri_Zero, &
                  "Critical Richardson for KPP shear mixing,"// &
                  " NOTE this the internal mixing and this is"// &
                  " not for setting the boundary layer depth." &
@@ -240,10 +236,24 @@ logical function cvmix_shear_init(Time, G, GV, param_file, diag, CS)
                         KPP_nu_zero=CS%Nu_Zero,   &
                         KPP_Ri_zero=CS%Ri_zero,   &
                         KPP_exp=CS%KPP_exp)
+
   !Allocation and initialization
   allocate( CS%N2( SZI_(G), SZJ_(G), SZK_(G)+1 ) );CS%N2(:,:,:) = 0.
   allocate( CS%S2( SZI_(G), SZJ_(G), SZK_(G)+1 ) );CS%S2(:,:,:) = 0.
 
 end function cvmix_shear_init
+
+logical function cvmix_shear_is_used(param_file)
+  ! Reads the parameter "LMD94" and "PP81" and returns state.
+!   This function allows other modules to know whether this parameterization will
+! be used without needing to duplicate the log entry.
+  type(param_file_type), intent(in) :: param_file
+  logical :: LMD94, PP81
+  call get_param(param_file, mod, "USE_LMD94", LMD94, &
+                 default=.false., do_not_log = .true.)
+  call get_param(param_file, mod, "Use_PP81", PP81, &
+                 default=.false., do_not_log = .true.)
+  cvmix_shear_is_used = (LMD94 .or. PP81)
+end function cvmix_shear_is_used
 
 end module MOM_cvmix_shear
