@@ -111,7 +111,7 @@
 !
 
    tkeo=tke
-   print*,'first',tke(nlev-1)
+!   print*,'first',tke(nlev-1)
    do i=1,nlev-1
 
 !     compute diffusivity
@@ -174,7 +174,7 @@
    do i=0,nlev
       tke(i) = max(tke(i),k_min)
    enddo
-   print*,'last',tke(nlev-1)
+!   print*,'last',tke(nlev-1)
    return
    end subroutine tkeeq
 !EOC

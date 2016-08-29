@@ -122,7 +122,7 @@
          Pb(i)   = -  B(i)*NN(i)
      enddo
    endif
-   print*,P(nlev-1),PV(nlev-1)
+   !print*,P(nlev-1),PV(nlev-1)
    return
    end subroutine production
 !EOC

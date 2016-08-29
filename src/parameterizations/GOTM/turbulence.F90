@@ -2545,10 +2545,10 @@
    !TEMPORARY
    numS=0.0!num
 
-   print*,'-----'
-   print*,num(nlev-1),nuh(nlev-1)
-   print*,cmue1(nlev-1),cmue2(nlev-1)
-   print*,tke(nlev-1),l(nlev-1)
+   !print*,'-----'
+   !print*,num(nlev-1),nuh(nlev-1)
+   !print*,cmue1(nlev-1),cmue2(nlev-1)
+   !print*,tke(nlev-1),l(nlev-1)
    return
    end subroutine kolpran
 !EOC

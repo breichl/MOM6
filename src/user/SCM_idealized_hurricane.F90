@@ -221,7 +221,7 @@ subroutine SCM_idealized_hurricane_wind_forcing(state, fluxes, day, G, CS)
   if (r/CS%r_max.gt.0.001 .AND. r/CS%r_max.lt.10.) then
      U10 = sqrt( A*B*dp*exp(-A/rB)/(1.2*rB) + 0.25*(rkm*f)**2 ) - 0.5*rkm*f
   elseif (r/CS%r_max.gt.10. .AND. r/CS%r_max.lt.12.) then
-     r=CS%r_max*10.
+     !r=CS%r_max*10.
      if (BR_Bench) then
         rkm = r/1000.
         rB=rkm**B

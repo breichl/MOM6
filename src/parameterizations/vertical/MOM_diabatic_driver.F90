@@ -90,6 +90,7 @@ type, public :: diabatic_CS ; private
   logical :: ePBL_is_additive        !< If true, the diffusivity from ePBL is added to all
                                      !! other diffusivities. Otherwise, the larger of kappa-
                                      !! shear and ePBL diffusivities are used.
+  integer :: EPBL_iLIM               !!< Limits iterations to get EPBL MLD
   integer :: nMode = 1               !< Number of baroclinic modes to consider
   logical :: int_tide_source_test    !< If true, apply an arbitrary generation site
                                      !! for internal tide testing (BDM)
@@ -334,7 +335,7 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
   integer :: ig, jg      ! global indices for testing testing itide point source (BDM)
   logical :: avg_enabled ! for testing internal tides (BDM)
   real :: Kd_add_here    ! An added diffusivity in m2/s
-  real, save :: h_est1 = 1000.0
+!  real, save :: h_est1 = 1000.0
   real :: h_est2
   integer :: iterate
   logical :: stopcycle
@@ -789,31 +790,36 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
         call hchksum(dSV_dS, "after applyBoundaryFluxes dSV_dS",G%HI,haloshift=0)
       endif
       call find_uv_at_h(u, v, h, u_h, v_h, G, GV)
-      h_est1=min(4000.,max(200.,h_est1))
-      do iterate=1,20
-         if(.not.stopcycle) then
-            call energetic_PBL(h, u_h, v_h, tv, fluxes, dt, Kd_ePBL, G, GV, &
+!      h_est1=min(4000.,max(400.,h_est1))
+      print*,'###############################'
+      call energetic_PBL(h, u_h, v_h, tv, fluxes, dt, Kd_ePBL, G, GV, &
                  CS%energetic_PBL_CSp, dSV_dT, dSV_dS, cTKE, &
-                 CS%KPP_buoy_flux, tv%eqn_of_state, h_est1,waves=waves)
-            h_est2=0.0
-            do K=1,nz-1 ; 
-               if (kd_epbl(3,3,k+1).gt.1.e-8) then
-                  h_est2=h_est2+h(3,3,k)*GV%H_to_m
-               endif
-            enddo
-            print*,iterate,h_est1,h_est2
-            if (abs(h_est2-h_est1).gt.h(3,3,k)*GV%H_to_m) then
-               if (h_est2.lt.h_est1) then
-                  h_est1 = min(h_est1*2.,max(h_est1*.5,0.5*(h_est1+h_est2)))
-               else
-                  h_est1=h_est1+h_est1*0.1
-               endif
-            else
-               h_est1 = h_est2
-               stopcycle=.true.
-            endif
-         endif
-      enddo
+                 CS%KPP_buoy_flux, tv%eqn_of_state, waves=waves)
+     ! do iterate=1,CS%EPBL_iLIM
+     !    if(.not.stopcycle) then
+     !       call energetic_PBL(h, u_h, v_h, tv, fluxes, dt, Kd_ePBL, G, GV, &
+     !            CS%energetic_PBL_CSp, dSV_dT, dSV_dS, cTKE, &
+     !            CS%KPP_buoy_flux, tv%eqn_of_state, h_est1,waves=waves)
+     !       h_est2=0.0
+     !        do K=1,nz-1 ; 
+     !           if (kd_epbl(3,3,k+1).gt.1e-8) then
+     !              h_est2=h_est2+h(3,3,k)*GV%H_to_m
+     !           endif
+     !        enddo
+     !        print*,kd_epbl(3,3,2),kd_epbl(3,3,1),maxval(Kd_epbl)
+     !        print*,iterate,h_est1,h_est2
+     !        if (abs(h_est2-h_est1).gt.h(3,3,k)*GV%H_to_m) then
+     !           if (h_est2.lt.h_est1) then
+     !              h_est1 = min(h_est1*2.,max(h_est1*.5,0.5*(h_est1+h_est2)))
+     !           else
+     !              h_est1=h_est1+h_est1*0.1
+     !           endif
+     !        else
+     !           h_est1 = h_est2
+     !           stopcycle=.true.
+     !        endif
+     !     endif
+     !  enddo
       ! If visc%MLD exists, copy the ePBL's MLD into it
       if (associated(visc%MLD)) then
         call energetic_PBL_get_MLD(CS%energetic_PBL_CSp, visc%MLD, G)
@@ -1846,6 +1852,10 @@ subroutine diabatic_driver_init(Time, G, GV, param_file, useALEalgorithm, diag, 
                  "If true, use an implied energetics planetary boundary \n"//&
                  "layer scheme to determine the diffusivity and viscosity \n"//&
                  "in the surface boundary layer.", default=.false.)
+  call get_param(param_file, mod, "EPBL_ITERATION_LIM", CS%EPBL_ilim, &
+                 "If 1, EPBL doesn't iterate over MLD, \n"//&
+                 "otherwise, sets upper-limit for iterations", default=1)
+  CS%EPBL_ilim=min(50,max(1,CS%EPBL_ilim))
   call get_param(param_file, mod, "EPBL_IS_ADDITIVE", CS%ePBL_is_additive, &
                  "If true, the diffusivity from ePBL is added to all\n"//&
                  "other diffusivities. Otherwise, the larger of kappa-\n"//&
