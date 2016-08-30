@@ -948,9 +948,14 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
 
       ! Unlike LMD94, we do not match to interior diffusivities. If using the original
       ! LMD94 shape function, not matching is equivalent to matching to a zero diffusivity.
-      Kdiffusivity(:,:) = 0. ! Diffusivities for heat and salt (m2/s)
-      Kviscosity(:)     = 0. ! Viscosity (m2/s)
-
+      if (.not. (CS%MatchTechnique.eq.'MatchBoth')) then
+         Kdiffusivity(:,:) = 0. ! Diffusivities for heat and salt (m2/s)
+         Kviscosity(:)     = 0. ! Viscosity (m2/s)
+      else
+         Kdiffusivity(:,1) = Kt(i,j,:)
+         Kdiffusivity(:,2) = Ks(i,j,:)
+         Kviscosity(:)=Kv(i,j,:)
+      endif
       !BGR/ Add option for use of surface buoyancy flux with total sw flux.
       if (CS%SW_METHOD .eq. SW_METHOD_ALL_SW) then
          surfBuoyFlux = buoyFlux(i,j,1)

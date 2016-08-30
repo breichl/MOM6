@@ -182,7 +182,7 @@ logical function cvmix_shear_init(Time, G, GV, param_file, diag, CS)
 !                 for this module
 !  (returns) cvmix_shear_init - True if module is to be used, False otherwise
 ! This include declares and sets the variable "version".
-  INTEGER :: NumberTrue
+  INTEGER :: NumberTrue=0
   LOGICAL :: use_JHL
 #include "version_variable.h"
 

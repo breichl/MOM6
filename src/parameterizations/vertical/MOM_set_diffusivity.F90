@@ -711,7 +711,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, &
     endif
 
   ! Add the input turbulent diffusivity.
-    if (CS%useKappaShear) then
+    if (CS%useKappaShear .or. CS%useCVMix) then
       if (present(Kd_int)) then
         do K=2,nz ; do i=is,ie
           Kd_int(i,j,K) = visc%Kd_turb(i,j,K) + 0.5*(Kd(i,j,k-1) + Kd(i,j,k))
