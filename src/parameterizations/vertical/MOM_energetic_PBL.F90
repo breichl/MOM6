@@ -781,7 +781,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
           CS%diag_TKE_mech_decay(i,j) + (exp_kh-1.0) * mech_TKE(i) * IdtdR0
         mech_TKE(i) = mech_TKE(i) * exp_kh
         !BGR: hypothetical convective_perel decay
-        conv_perel(i)=conv_perel(i)*exp(-h(i,k-1)/10.)
+        !conv_perel(i)=conv_perel(i)*exp(-h(i,k-1)/10.)
         if(CS%SeparateTKE) then
           exp_kh = 1.0
           if (Idecay_len_wi_TKE(i) > 0.0) exp_kh = exp(-h(i,k-1)*Idecay_len_wi_TKE(i))
