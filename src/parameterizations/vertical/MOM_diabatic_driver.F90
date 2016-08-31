@@ -561,6 +561,9 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
     ! since the matching to nonzero interior diffusivity can be problematic.
     ! Changes: Kd_int. Sets: KPP_NLTheat, KPP_NLTscalar
 
+    if (CS%useConvection) call diffConvection_calculate(CS%Conv_CSp, &
+         G, GV, h, tv%T, tv%S, tv%eqn_of_state, Kd_int)
+
 !$OMP parallel default(none) shared(is,ie,js,je,nz,Kd_salt,Kd_int,visc,CS,Kd_heat)
 !$OMP do
       do k=1,nz+1 ; do j=js,je ; do i=is,ie
@@ -580,6 +583,7 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
       enddo ; enddo ; enddo
     endif
 !$OMP end parallel
+
 
     call KPP_calculate(CS%KPP_CSp, G, GV, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
       fluxes%ustar, CS%KPP_buoy_flux, Kd_heat, Kd_salt, visc%Kv_turb, CS%KPP_NLTheat, CS%KPP_NLTscalar, Waves=Waves)
@@ -650,8 +654,11 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
   endif
 
   ! Check for static instabilities and increase Kd_int where unstable
-  if (CS%useConvection) call diffConvection_calculate(CS%Conv_CSp, &
-         G, GV, h, tv%T, tv%S, tv%eqn_of_state, Kd_int)
+  !moved convect call up for KPP, only for non-KPP.
+  if ((.not.CS%useKPP).and.CS%useConvection) then
+     call diffConvection_calculate(CS%Conv_CSp, &
+       G, GV, h, tv%T, tv%S, tv%eqn_of_state, Kd_int)
+  endif
 
   if (CS%useKPP) then
 
