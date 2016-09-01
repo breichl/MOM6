@@ -123,8 +123,8 @@
      C1 = 0.08
      C2 = 0.7
      C3 = 0.2
-     CS1 = 0.0!C1
-     CS2 = 0.0!C2
+     CS1 = C1
+     CS2 = C2
      
      DS0 = A1*(1.-6.*A1/B1-3.*CS1)
      DM0 = A1*(1.-6.*A1/B1-3.*C1)
@@ -160,13 +160,12 @@
                       ((9.*a1*a2*an(i)-1.)*(1.-3*a2*an(i)*(6*a1+b2*(1-c3))))
 
      end do
-
      
 
-     !print*,'h--------------'
-     !print*,cmue1(NLEV-5:NLEV)
-     !print*,cmue2(NLEV-5:NLEV)
-     !print*,AN(NLEV-5:NLEV)
+     print*,'h--------------'
+     print*,cmue1(NLEV-5:NLEV)
+     print*,cmue2(NLEV-5:NLEV)
+     print*,AN(NLEV-5:NLEV)
 
      return
      end subroutine cmue_h

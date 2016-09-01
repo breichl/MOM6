@@ -490,11 +490,14 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
   real :: LangEnhK     ! Langmuir enhancement for mixing coefficient 
   logical :: StokesShearInRIB  ! Use Stokes Shear in RIb calculation
   logical :: SurfaceStokesinRIB ! Use Surface Stokes in RIb
+  logical :: StokesMixing
+  real, save :: KPPHPREV ! Previous mixing layer depth to get Stokes enhancement
   real :: surfHuS, surfHvS, surfUs, surfVs, wavedir, currentdir
   real :: VarUp, VarDn, M, VarLo, VarAvg
   real :: H10pct, H20pct,CMNFACT, USx20pct, USy20pct
   integer :: B 
   real :: Tup, Hup, Tlo, Hlo, DPT
+  
 
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then
@@ -682,6 +685,7 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
         if (present(Waves).and.associated(Waves)) then
            StokesShearInRIb   = Waves%StokesShearInRIb
            SurfaceStokesInRIb = Waves%SurfaceStokesinRIb
+           StokesMixing = Waves%StokesMixing
            !/
            ! If Stokes Shear in RIb, compute 10% of OBL Stokes average
            !  rather than computing this from discritized, we can compute
@@ -690,15 +694,14 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
            H10pct=min(-0.1,-hTot);!hTot is 10% of OBL
            if (StokesShearInRIb) then
               do b=1,WAVES%NumBands
-                 CMNFACT= (1.0 - EXP(H10pct*WAVES%WaveNum_Cen(b))) / H10pct/ &
-                      (2*WAVES%WaveNum_Cen(b))
+                 CMNFACT= (1.0 - EXP(H10pct*WAVES%WaveNum_Cen(b))) / &
+                      (0.-H10pct)/ (2*WAVES%WaveNum_Cen(b))
                  surfUS = surfUS + 0.5 * ( WAVES%STKx0(i,j,b) + &
                       WAVES%STKx0(i-1,j,b) ) * CMNFACT
                  surfVS = surfVS + 0.5 * ( WAVES%STKy0(i,j,b) + &
                       WAVES%STKy0(i,j-1,b) ) * CMNFACT
               enddo
            endif
-           
            !/
            ! Now compute Langmuir number at h points.
            USy20pct = 0.0;USx20pct = 0.0;
@@ -706,16 +709,18 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
            do b=1,WAVES%NumBands
               CMNFACT = (1.0 - EXP(H20pct*2*WAVES%WaveNum_Cen(b))) &
                    / (0.0-H20pct) / (2*WAVES%WaveNum_Cen(b))
+              
               USy20pct = USy20pct + 0.5 * ( WAVES%STKy0(i,j,b) &
                    + WAVES%STKy0(i,j-1,b) ) * CMNFACT
               USx20pct = USx20pct + 0.5 * ( WAVES%STKx0(i,j,b) &
                    + WAVES%STKx0(i-1,j,b) ) * CMNFACT
            enddo
            ! Stokes Shear
-           wavedir=atan2(0.5*(waves%us_y(i,j,1)+waves%us_y(i,j-1,1) -     &
-                waves%us_y(i,j,ksfc)-waves%us_y(i,j-1,ksfc)),             &
-                0.5*(waves%us_x(i,j,1)+waves%us_x(i-1,j,1) -              &
-                waves%us_x(i,j,ksfc)-waves%us_x(i-1,j,ksfc)))
+!           wavedir=atan2(0.5*(waves%us_y(i,j,1)+waves%us_y(i,j-1,1) -     &
+!                waves%us_y(i,j,ksfc)-waves%us_y(i,j-1,ksfc)),             &
+!                0.5*(waves%us_x(i,j,1)+waves%us_x(i-1,j,1) -              &
+!                waves%us_x(i,j,ksfc)-waves%us_x(i-1,j,ksfc)))
+           wavedir=atan2(USy20pct,USx20pct)
            ! Lagrangian current shear (Reynolds stress direction approx)
            currentdir= atan2(0.5*(waves%us_y(i,j,1)+waves%us_y(i,j-1,1) - &
                 waves%us_y(i,j,ksfc)-waves%us_y(i,j-1,ksfc)               &
@@ -727,20 +732,10 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
                 max(1.e-10,sqrt(USx20pct**2 + USy20pct**2))) &
                 *sqrt(1./max(0.000001,cos(wavedir-currentdir)))
 
-           !/Compute enhancement factors
-           if (WAVES%LangmuirEnhanceW) then
-              LangEnhW   = sqrt(1.+(1.5*WAVES%LangNum(i,j))**(-2) + &
-                                        (5.4*WAVES%LangNum(i,j))**(-4))
-           else
-              LangEnhW = 1.0
-           endif
            if (WAVES%LangmuirEnhanceVt2) then
               LangEnhVT2 = min(50.,1. + 2.3/sqrt(WAVES%LangNum(i,j)))
            else
               LangEnhVT2 = 1.0
-           endif
-           if (WAVES%LangmuirEnhanceK) then
-              LangEnhK   = min(2.25, 1. + 1./WAVES%LangNum(i,j))
            endif
         else
            LangEnhW   = 1.0
@@ -748,14 +743,14 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
            LangEnhK   = 1.0
            StokesShearInRIb = .false.
            SurfaceStokesInRIb = .false.
+           StokesMixing = .false.
         endif
-
 
         !BGR/ Adding Stokes drift
         if (StokesShearInRIb) then
            !Stokes drift is on grid centers for now
-          Uk =  Uk + (Waves%Us_x(i,j,k) -surfUS )
-          Vk =  Vk + (Waves%Us_y(i,j,k) -surfVS )
+          Uk =  Uk + (0.5*(Waves%Us_x(i,j,k)+Waves%US_x(i-1,j,k)) -surfUS )
+          Vk =  Vk + (0.5*(Waves%Us_y(i,j,k)+Waves%Us_y(i,j-1,k)) -surfVS )
         endif
         
         if (SurfaceStokesInRIb) then
@@ -943,9 +938,40 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
 ! smg: remove code above
 ! **********************************************************************
 
+      if (present(Waves).and.associated(Waves)) then
+         ! Stokes Shear
+         !wavedir=atan2(0.5*(waves%us_y(i,j,1)+waves%us_y(i,j-1,1) -     &
+         !     waves%us_y(i,j,int(kOBL))-waves%us_y(i,j-1,int(kOBL))),   &
+         !       0.5*(waves%us_x(i,j,1)+waves%us_x(i-1,j,1) -            &
+         !       waves%us_x(i,j,int(kOBL))-waves%us_x(i-1,j,int(kOBL))))
+         wavedir=atan2(USy20pct,USx20pct)
+         ! Lagrangian current shear (Reynolds stress direction approx)
+         currentdir= atan2(0.5*(waves%us_y(i,j,1)+waves%us_y(i,j-1,1) - &
+              waves%us_y(i,j,int(kOBL))-waves%us_y(i,j-1,int(kOBL))     &
+              +v(i,j,1)+v(i,j-1,1)-v(i,j,int(kOBL))-v(i,j-1,int(kOBL))),&
+              0.5*(waves%us_x(i,j,1)+waves%us_x(i-1,j,1) -              &
+              waves%us_x(i,j,int(kOBL))-waves%us_x(i-1,j,int(kOBL))     &
+              +u(i,j,1)+u(i-1,j,1)-u(i,j,int(kOBL))-u(i-1,j,int(kOBL))))
+         WAVES%LangNum(i,j) = sqrt(surfFricVel /      &
+              max(1.e-10,sqrt(USx20pct**2 + USy20pct**2))) &
+              *max(100.,sqrt(1./max(0.000001,cos(wavedir-currentdir))))
+         
+         !/Compute enhancement factors
+         if (WAVES%LangmuirEnhanceW) then
+            LangEnhW   = sqrt(1.+(1.5*WAVES%LangNum(i,j))**(-2) + &
+                 (5.4*WAVES%LangNum(i,j))**(-4))
+         else
+            LangEnhW = 1.0
+         endif
+         if (WAVES%LangmuirEnhanceK) then
+            LangEnhK   = min(2.25, 1. + 1./WAVES%LangNum(i,j))
+         else
+            LangEnhK = 1.0
+         endif
+      endif
 
       ! Call CVMix/KPP to obtain OBL diffusivities, viscosities and non-local transports
-
+      
       ! Unlike LMD94, we do not match to interior diffusivities. If using the original
       ! LMD94 shape function, not matching is equivalent to matching to a zero diffusivity.
       if (.not. (CS%MatchTechnique.eq.'MatchBoth')) then
@@ -1111,12 +1137,14 @@ subroutine KPP_calculate(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, &
             Kt(i,j,k) = Kt(i,j,k) + Kdiffusivity(k,1)
             Ks(i,j,k) = Ks(i,j,k) + Kdiffusivity(k,2)
             Kv(i,j,k) = Kv(i,j,k) + Kviscosity(k)
+            if (StokesMixing) Waves%KvS(i,j,k)=Kv(i,j,k)
           enddo
         else ! KPP replaces prior diffusivity when former is non-zero
           do k=1, G%ke+1
             if (Kdiffusivity(k,1) /= 0.) Kt(i,j,k) = Kdiffusivity(k,1)
             if (Kdiffusivity(k,2) /= 0.) Ks(i,j,k) = Kdiffusivity(k,2)
             if (Kviscosity(k) /= 0.) Kv(i,j,k) = Kviscosity(k)
+            if (StokesMixing) Waves%KvS(i,j,k)=Kv(i,j,k)
           enddo
         endif
       endif

@@ -21,7 +21,7 @@ implicit none ; private
 public MOM_wave_interface_init
 public Import_Stokes_Drift
 public StokesMixing
-
+public CoriolisStokes
 
 !> Container for wave related parameters
 type, public:: wave_parameters_CS ;
@@ -37,6 +37,13 @@ private
   !  should be applied directly to Stokes current
   !  (with separate mixing parameter for Eulerian
   !  mixing contribution)
+  logical, public :: CoriolisStokes
+  !^ True if Stokes drift is present and Coriolis
+  !  Stokes acceleration of mean current 
+  !  should be applied.
+  logical, public :: StokesInKappaShear=.false.!This doesn't work well.
+  !^ True if Stokes drift is present and 
+  !  should be added into Kappa Shear mixing.
   logical, public :: LangmuirEnhanceW   
   !^ True if turbulent velocity scales should be
   !  enhanced due to Langmuir mixing.
@@ -130,15 +137,19 @@ subroutine MOM_wave_interface_init(G,GV,param_file, CS)
 
   ! Add any initializations needed here
   CS%dataOverrideIsInitialized = .false.
+  ! Here we assume the only way to get here is with UseWaves enabled.
+  ! Therefore, we do not read from input file again.
+  CS%UseWaves=.true.
 
   call log_version(param_file, mod, version)
-  call get_param(param_file,mod,"USE_WAVES",CS%UseWaves, &
-                 'Main switch to use wave input', units='',default=.false.)
   call get_param(param_file, mod, "LAGRANGIAN_MIXING", CS%LagrangianMixing, &
        "Flag to use Lagrangian Mixing of momentum", units="", &
        Default=.false.)
   call get_param(param_file, mod, "STOKES_MIXING", CS%StokesMixing, &
        "Flag to use Stokes Mixing of momentum", units="", &
+       Default=.false.)  
+  call get_param(param_file, mod, "CORIOLIS_STOKES", CS%CoriolisStokes, &
+       "Flag to use Coriolis Stokes acceleration", units="", &
        Default=.false.)  
   call get_param(param_file, mod, "LANGMUIR_ENHANCE_W", CS%LangmuirEnhanceW, &
        'Flag for Langmuir turbulence enhancement of turbulent'//&
@@ -475,10 +486,10 @@ subroutine StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
 !  This is really just a temporary attempt...
 
   do k = 1, G%ke
-     do j = G%jsc, G%jec
+     do j = G%jscB, G%jecB
         do i = G%iscB, G%iecB
            if (k.eq.1) then
-              dTauUp = 0.0!FLUXES%taux(i,j)/1000.!Convert????
+              dTauUp = 0.!FLUXES%taux(i,j)/1000.!Convert????
               dTauDn =  0.5*(WAVES%Kvs(i,j,k+1)+WAVES%Kvs(i+1,j,k+1))*&
                    (waves%us_x(i,j,k)-waves%us_x(i,j,k+1))&
                    /(GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
@@ -507,9 +518,9 @@ subroutine StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
 
   do k = 1, G%ke
      do j = G%jscB, G%jecB
-        do i = G%isc, G%iec
+        do i = G%iscB, G%iecB
            if (k.eq.1) then
-              dTauUp = 0.0!FLUXES%tauy(i,j)/1000.!Convert????
+              dTauUp = 0.!FLUXES%tauy(i,j)/1000.!Convert????
               dTauDn = 0.5*(waves%Kvs(i,j,k+1)+waves%Kvs(i,j+1,k+1))&
                    *(waves%us_y(i,j,k)-waves%us_y(i,j,k+1))&
                    /(GV%H_to_m *0.5*(h(i,j,k)+h(i,j,k+1)) )
@@ -537,5 +548,36 @@ subroutine StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
 
 end subroutine StokesMixing
 
+subroutine CoriolisStokes(G, GV, DT, h, u, v, WAVES)
+  ! Arguments
+  type(ocean_grid_type),                  intent(in)    :: G              !< Ocean grid
+  type(verticalGrid_type),                intent(in)    :: GV             !< Ocean vertical grid
+  real, intent(in)                                         :: Dt             !< Time step of MOM6 [s] for GOTM turbulence solver
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(in)    :: h              !< Layer/level thicknesses (units of H)
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(inout)    :: u              !< Velocity i-component (m/s)
+  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), intent(inout)    :: v              !< Velocity j-component (m/s)
+  type(Wave_parameters_CS), pointer                         :: Waves  !< Surface wave related control structure.
 
+  ! Local variables
+  REAL :: DVel
+  INTEGER :: i,j,k
+
+  do k = 1, G%ke
+     do j = G%jscB, G%jecB
+        do i = G%iscB, G%iecB
+           DVel = 0.25*(WAVES%us_y(i,j+1,k)+WAVES%us_y(i-1,j+1,k))*G%CoriolisBu(i,j+1) +  0.25*(WAVES%us_y(i,j,k)+WAVES%us_y(i-1,j,k))*G%CoriolisBu(i,j)
+           u(i,j,k) = u(i,j,k)+DVEL
+        enddo
+     enddo
+  enddo
+     
+  do k = 1, G%ke
+     do j = G%jscB, G%jecB
+        do i = G%iscB, G%iecB
+           DVel = 0.25*(WAVES%us_x(i+1,j,k)+WAVES%us_x(i+1,j-1,k))*G%CoriolisBu(i+1,j) +  0.25*(WAVES%us_x(i,j,k)+WAVES%us_x(i,j-1,k))*G%CoriolisBu(i,j)
+           v(i,j,k) = v(i,j,k)-DVEL
+        enddo
+     enddo
+  enddo
+end subroutine CoriolisStokes
 end module MOM_wave_interface

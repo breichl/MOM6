@@ -116,7 +116,7 @@
    REALTYPE                  :: prod_pos,prod_neg,buoyan_pos,buoyan_neg
    REALTYPE                  :: ki,epslim,NN_pos
    REALTYPE                  :: ds,db,Lcrit
-   REALTYPE                  :: cnpar=0.5!_ONE_
+   REALTYPE                  :: cnpar=_ONE_
    REALTYPE                  :: q2l(0:nlev),q3(0:nlev)
    REALTYPE                  :: avh(0:nlev)
    REALTYPE                  :: Lz(0:nlev)
@@ -158,7 +158,7 @@
       avh(i)      =  sl*sqrt(2.*tke(i))*L(i)
 
 !     compute production terms in q^2 l - equation
-      prod        =  e1*L(i)*P(i)!+e6*L(i)*PV(i)!E6 may need updated
+      prod        =  e1*L(i)*P(i)+e6*L(i)*PV(i)!E6 may need updated
       buoyan      =  e3*L(i)*B(i)
       diss        =  q3(i)/b1*(1.+e2*(L(i)/Lz(i))*(L(i)/Lz(i)))
 

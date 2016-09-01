@@ -100,7 +100,7 @@
    REALTYPE                  :: DiffKup,DiffKdw,pos_bc
    REALTYPE                  :: prod,buoyan,diss
    REALTYPE                  :: prod_pos,prod_neg,buoyan_pos,buoyan_neg
-   REALTYPE                  :: cnpar=0.5!_ONE_
+   REALTYPE                  :: cnpar=_ONE_
    REALTYPE                  :: avh(0:nlev)
    REALTYPE                  :: Lsour(0:nlev),Qsour(0:nlev)
 
@@ -111,7 +111,7 @@
 !
 
    tkeo=tke
-
+!   print*,'first',tke(nlev-1)
    do i=1,nlev-1
 
 !     compute diffusivity
@@ -174,7 +174,7 @@
    do i=0,nlev
       tke(i) = max(tke(i),k_min)
    enddo
-
+!   print*,'last',tke(nlev-1)
    return
    end subroutine tkeeq
 !EOC

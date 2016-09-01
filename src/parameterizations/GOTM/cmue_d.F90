@@ -100,7 +100,7 @@
      anMinDen  = 2.*(d4+nt1)
      anMin     = anMinNum / anMinDen
      
-     if (1.eq.0)then!abs(n2-d5).lt.small) then
+     if (abs(n2-d5).lt.small) then
 !       (special treatment to  avoid a singularity)
 
         do i=1,nlev-1
@@ -134,7 +134,7 @@
            tmp1  = -d2 + n0 + (n1-d3-nt2)*an(i)
            tmp2  =  n2-d5
 
-           as(i) =  0.0!(-tmp1 + sqrt(tmp1*tmp1-4.*tmp0*tmp2) ) / (2.*tmp2)
+           as(i) =  (-tmp1 + sqrt(tmp1*tmp1-4.*tmp0*tmp2) ) / (2.*tmp2)
 
 !          compute stability function
            dCm  = d0  +  d1*an(i) +  d2*as(i) + d3*an(i)*as(i) + d4*an(i)*an(i) + d5*as(i)*as(i)

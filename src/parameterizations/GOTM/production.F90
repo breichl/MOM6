@@ -110,19 +110,19 @@
               numS(i)*(SSuS(i)+SSvS(i))
          B(i)    = -nuh(i)*NN(i)
          Pb(i)   = -  B(i)*NN(i)
-      enddo
+       enddo
    else
       do i=0,nlev
          P(i)    =  num(i)*( SS(i)+alpha_eff*NN(i) ) + &
               numS(i)*(sqrt(SSu(i)*SSuS(i))+sqrt(SSv(i)*SSvS(i)))
           !Production due to vortex force
           PV(i)   =  num(i)*(sqrt(SSu(i)*SSuS(i))+sqrt(SSv(i)*SSvS(i))) +&
-               numS(i)*(SSuS(i)+SSVS(i))
+                numS(i)*(SSuS(i)+SSVS(i))
          B(i)    = -nuh(i)*NN(i)
          Pb(i)   = -  B(i)*NN(i)
-      enddo
+     enddo
    endif
-
+   !print*,P(nlev-1),PV(nlev-1)
    return
    end subroutine production
 !EOC

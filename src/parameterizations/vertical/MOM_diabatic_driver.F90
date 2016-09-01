@@ -59,7 +59,7 @@ use MOM_variables,           only : thermo_var_ptrs, vertvisc_type, accel_diag_p
 use MOM_variables,           only : cont_diag_ptrs, MOM_thermovar_chksum, p3d
 use MOM_verticalGrid,        only : verticalGrid_type
 use MOM_wave_speed,          only : wave_speeds
-use MOM_wave_interface, only : wave_parameters_CS, StokesMixing
+use MOM_wave_interface, only : wave_parameters_CS, StokesMixing, CoriolisStokes
 use time_manager_mod,        only : increment_time ! for testing itides (BDM)
 
 implicit none ; private
@@ -94,6 +94,7 @@ type, public :: diabatic_CS ; private
   logical :: ePBL_is_additive        !< If true, the diffusivity from ePBL is added to all
                                      !! other diffusivities. Otherwise, the larger of kappa-
                                      !! shear and ePBL diffusivities are used.
+  integer :: EPBL_iLIM               !!< Limits iterations to get EPBL MLD
   integer :: nMode = 1               !< Number of baroclinic modes to consider
   logical :: int_tide_source_test    !< If true, apply an arbitrary generation site
                                      !! for internal tide testing (BDM)
@@ -338,7 +339,10 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
   integer :: ig, jg      ! global indices for testing testing itide point source (BDM)
   logical :: avg_enabled ! for testing internal tides (BDM)
   real :: Kd_add_here    ! An added diffusivity in m2/s
-
+!  real, save :: h_est1 = 1000.0
+  real :: h_est2
+  integer :: iterate
+  logical :: stopcycle
   is   = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = G%ke
   Isq  = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
   nkmb = GV%nk_rho_varies
@@ -534,7 +538,20 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
   ! Sets: Kd, Kd_int, visc%Kd_extra_T, visc%Kd_extra_S
   ! Also changes: visc%Kd_turb, visc%TKE_turb (not clear that TKE_turb is used as input ????)
   ! And sets visc%Kv_turb
+  if (associated(waves)) then
+     if (waves%stokesinkappashear) then
+        print*,'adding',maxval(abs(waves%us_x)),maxval(abs(waves%us_y))
+        u_h=u_h+waves%us_x
+        v_h=v_h+waves%us_y
+     endif
+  endif
   call set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, CS%optics, visc, dt, G, GV, CS%set_diff_CSp, Kd, Kd_int)
+  if (associated(waves)) then
+     if (waves%stokesinkappashear) then
+        u_h=u_h-waves%us_x
+        v_h=v_h-waves%us_y
+     endif
+  endif
   call cpu_clock_end(id_clock_set_diffusivity)
   if (showCallTree) call callTree_waypoint("done with set_diffusivity (diabatic)")
 
@@ -584,7 +601,6 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
     endif
 !$OMP end parallel
 
-
     call KPP_calculate(CS%KPP_CSp, G, GV, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
       fluxes%ustar, CS%KPP_buoy_flux, Kd_heat, Kd_salt, visc%Kv_turb, CS%KPP_NLTheat, CS%KPP_NLTscalar, Waves=Waves)
 !$OMP parallel default(none) shared(is,ie,js,je,nz,Kd_salt,Kd_int,visc,CS,Kd_heat)
@@ -617,7 +633,6 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
       call hchksum(Kd, "after KPP Kd",G%HI,haloshift=0)
       call hchksum(Kd_Int, "after KPP Kd_Int",G%HI,haloshift=0)
     endif
-
   endif  ! endif for KPP
 
   if (CS%useGOTM) then
@@ -645,11 +660,6 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
         do k=1,nz+1 ; do j=js,je ; do i=is,ie
           visc%Kd_extra_T(i,j,k) = Kd_heat(i,j,k) - Kd_int(i,j,k)
         enddo ; enddo ; enddo
-      endif
-      if (associated (waves)) then
-         if (WAVES%StokesMixing) then
-            call StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
-         endif
       endif
   endif
 
@@ -684,6 +694,15 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
     endif
 
   endif ! endif for KPP
+
+  if (associated (waves)) then
+     if (WAVES%StokesMixing) then
+        call StokesMixing(G, GV, DT, h, u, v, WAVES, FLUXES)
+     endif
+     if (WAVES%CoriolisStokes) then
+        call CoriolisStokes(G, GV, DT, h, u, v, WAVES)
+     endif
+  endif
 
   ! Differential diffusion done here.
   ! Changes: tv%T, tv%S
@@ -781,11 +800,37 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
         call hchksum(dSV_dT, "after applyBoundaryFluxes dSV_dT",G%HI,haloshift=0)
         call hchksum(dSV_dS, "after applyBoundaryFluxes dSV_dS",G%HI,haloshift=0)
       endif
-
       call find_uv_at_h(u, v, h, u_h, v_h, G, GV)
+!      h_est1=min(4000.,max(400.,h_est1))
+      print*,'###############################'
       call energetic_PBL(h, u_h, v_h, tv, fluxes, dt, Kd_ePBL, G, GV, &
-                         CS%energetic_PBL_CSp, dSV_dT, dSV_dS, cTKE)
-
+                 CS%energetic_PBL_CSp, dSV_dT, dSV_dS, cTKE, &
+                 CS%KPP_buoy_flux, tv%eqn_of_state, waves=waves)
+     ! do iterate=1,CS%EPBL_iLIM
+     !    if(.not.stopcycle) then
+     !       call energetic_PBL(h, u_h, v_h, tv, fluxes, dt, Kd_ePBL, G, GV, &
+     !            CS%energetic_PBL_CSp, dSV_dT, dSV_dS, cTKE, &
+     !            CS%KPP_buoy_flux, tv%eqn_of_state, h_est1,waves=waves)
+     !       h_est2=0.0
+     !        do K=1,nz-1 ; 
+     !           if (kd_epbl(3,3,k+1).gt.1e-8) then
+     !              h_est2=h_est2+h(3,3,k)*GV%H_to_m
+     !           endif
+     !        enddo
+     !        print*,kd_epbl(3,3,2),kd_epbl(3,3,1),maxval(Kd_epbl)
+     !        print*,iterate,h_est1,h_est2
+     !        if (abs(h_est2-h_est1).gt.h(3,3,k)*GV%H_to_m) then
+     !           if (h_est2.lt.h_est1) then
+     !              h_est1 = min(h_est1*2.,max(h_est1*.5,0.5*(h_est1+h_est2)))
+     !           else
+     !              h_est1=h_est1+h_est1*0.1
+     !           endif
+     !        else
+     !           h_est1 = h_est2
+     !           stopcycle=.true.
+     !        endif
+     !     endif
+     !  enddo
       ! If visc%MLD exists, copy the ePBL's MLD into it
       if (associated(visc%MLD)) then
         call energetic_PBL_get_MLD(CS%energetic_PBL_CSp, visc%MLD, G)
@@ -808,6 +853,13 @@ subroutine diabatic(u, v, h, tv, fluxes, visc, ADp, CDp, dt, G, GV, CS, WAVES)
         ea(i,j,k) = ea(i,j,k) + Ent_int
         Kd_int(i,j,K)  = Kd_int(i,j,K) + Kd_add_here
 
+        !BGR
+        !visc%Kv_turb(i,j,K) = max(visc%Kv_turb(i,j,K),Kd_ePBL(i,j,K))
+        !Kd_int(i,j,K)  = max(Kd_int(i,j,K),Kd_ePBL(i,j,K))
+        !if (KD_ePBL(i,j,K).gt.1.e-5) then
+        !   visc%Kv_turb(i,j,K) = Kd_ePBL(i,j,K)
+        !   Kd_int(i,j,K)  = Kd_ePBL(i,j,K) 
+        !endif
         ! for diagnostics
         Kd_heat(i,j,K) = Kd_heat(i,j,K) + Kd_int(i,j,K)
         Kd_salt(i,j,K) = Kd_salt(i,j,K) + Kd_int(i,j,K)
@@ -1811,6 +1863,10 @@ subroutine diabatic_driver_init(Time, G, GV, param_file, useALEalgorithm, diag, 
                  "If true, use an implied energetics planetary boundary \n"//&
                  "layer scheme to determine the diffusivity and viscosity \n"//&
                  "in the surface boundary layer.", default=.false.)
+  call get_param(param_file, mod, "EPBL_ITERATION_LIM", CS%EPBL_ilim, &
+                 "If 1, EPBL doesn't iterate over MLD, \n"//&
+                 "otherwise, sets upper-limit for iterations", default=1)
+  CS%EPBL_ilim=min(50,max(1,CS%EPBL_ilim))
   call get_param(param_file, mod, "EPBL_IS_ADDITIVE", CS%ePBL_is_additive, &
                  "If true, the diffusivity from ePBL is added to all\n"//&
                  "other diffusivities. Otherwise, the larger of kappa-\n"//&
