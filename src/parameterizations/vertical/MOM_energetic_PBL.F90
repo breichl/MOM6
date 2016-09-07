@@ -959,8 +959,9 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
                     ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
             elseif (CS%mixinglengthchoice.eq.2) then
-               MixLength = (h_tt*hb_hs(i,K)) / &
-                    ((h_tt/LimitLength) + 1.)
+               sig=min(1.,htot(i)/h_est)
+               MixLength = h_est*cos(sig*3.14157/2.)
+               MixLength=sig*exp(-10./(sig+1.e-6))
             elseif (CS%mixinglengthchoice.eq.3) then
                MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
                     ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
@@ -973,7 +974,15 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
 
             VstarUsed(k)=vstar
             !mixlength=max(0.05,mixlength/20.)
-            mixlength=max(0.1,mixlength)
+!            if (sig.lt..1) then
+!               mixlength=10.**(-4.+sig*50.)
+!            elseif (sig.lt..7) then
+!               mixlength=10.
+!            else
+!               mixlength=10.*10**(-(sig-.7)*20.)
+!            endif
+              
+            mixlength=max(0.01,mixlength)
             !mixlength=h_est*sig*(1-sig)**2
             Kd_guess0 = (vstar) * vonKar * MixLength*(1.+Enhance*fracsig)
             VstarUsed(k)=vstar
@@ -1004,13 +1013,31 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
               if (TKE_here > 0.0) then
                 vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
                 !Here we might have to distinguish
-                MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
-                     ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+                if (CS%mixinglengthchoice.eq.1) then
+                   MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
+                        ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+                elseif (CS%mixinglengthchoice.eq.2) then
+                   sig=min(1.,htot(i)/h_est)
+                   MixLength = h_est*cos(sig*3.14157/2.)
+                   MixLength=sig*exp(-10./(sig+1.e-6))
+                elseif (CS%mixinglengthchoice.eq.3) then
+                   MixLength = ((h_tt*hb_hs(i,K))*vstar) / &
+                        ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hb_hs(i,K)) + vstar)
+                   BuoyLength=max(vstar,1.e-14)/max(1.e-12,N_1d(k))
+                   MixLength=min(MixLength,BuoyLength)
+                endif
                 sig=min(1.,htot(i)/h_est)
+!                if (sig.lt..1) then
+!                   mixlength=10.**(-4.+sig*50.)
+!                elseif (sig.lt..7) then
+!                   mixlength=10.
+!                else
+!                   mixlength=10.*10**(-(sig-.7)*20.)
+!                endif
                 fracsig = sig*(1.-sig)**2/0.15
                 !mixlength=max(0.05,mixlength/20.)
                 !mixlength=h_est*sig*(1-sig)**2
-                mixlength=max(0.1,mixlength)
+                mixlength=max(0.01,mixlength)
                 Kd(i,k) = (vstar)* vonKar * MixLength*(1.+Enhance*fracsig)
                 MixUsed(k)=mixlength
                 VstarUsed(k)=vstar

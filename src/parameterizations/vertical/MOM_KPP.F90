@@ -311,6 +311,7 @@ logical function KPP_init(paramFile, G, diag, Time, CS, passive, Waves)
                        vonKarman=CS%vonKarman,             &
                        surf_layer_ext=CS%surf_layer_ext,   &
                        interp_type=CS%interpType,          &
+                       interp_type2=CS%interpType,        &
                        lEkman=CS%computeEkman,             &
                        lMonOb=CS%computeMoninObukhov,      &
                        MatchTechnique=CS%MatchTechnique,   &

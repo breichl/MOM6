@@ -46,9 +46,12 @@ type, public :: CVMix_shear_CS ! ; private
   real    :: Ri_zero
   real    :: Nu_zero
   real    :: KPP_exp
-  real, allocatable, dimension(:,:,:) :: N2        !< Squared Brunt-Vaisala frequency (1/s2)
-  real, allocatable, dimension(:,:,:) :: S2        !< Squared shear frequency (1/s2)
+  real, allocatable, dimension(:,:,:) :: Ri_grad   !< Gradient Richardson number
   character(10) :: Mix_Scheme
+  integer :: id_Ri_grad
+  type(diag_ctrl), pointer :: diag ! A structure that is used to regulate the
+                                   ! timing of diagnostic output.
+  type(time_type), pointer :: Time ! A pointer to the ocean model's clock.
 end type CVMix_shear_CS
 
 ! integer :: id_clock_project, id_clock_KQ, id_clock_avg, id_clock_setup
@@ -95,7 +98,6 @@ subroutine Calculate_cvmix_shear(u_H, v_H, h, tv, KH,  &
   real :: gorho
   real :: pref, DU, DV, DRHO, DZ, N2, S2
   real, dimension(2*(G%ke)) :: pres_1d, temp_1d, salt_1d, rho_1d 
-  real, dimension(G%ke+1) ::  Ri_Grad !< Gradient Richardson number
 
   ! some constants
   GoRho = GV%g_Earth / GV%Rho0
@@ -108,7 +110,7 @@ subroutine Calculate_cvmix_shear(u_H, v_H, h, tv, KH,  &
 
       ! Richardson number computed for each cell in a column.
       pRef = 0.
-      Ri_Grad(:)=1.e8
+      CS%Ri_Grad(i,j,:)=1.e8
       do k=1,G%ke
 
         ! pressure, temp, and saln for EOS
@@ -130,7 +132,7 @@ subroutine Calculate_cvmix_shear(u_H, v_H, h, tv, KH,  &
       enddo ! k-loop finishes
 
       ! compute in-situ density
-      call calculate_density(Temp_1D, Salt_1D, pres_1D, rho_1D, 1, 3*G%ke, TV%EQN_OF_STATE)
+      call calculate_density(Temp_1D, Salt_1D, pres_1D, rho_1D, 1, 2*G%ke, TV%EQN_OF_STATE)
 
       ! N2 (can be negative) and N (non-negative) on interfaces.
       ! deltaRho is non-local rho difference used for bulk Richardson number.
@@ -144,16 +146,20 @@ subroutine Calculate_cvmix_shear(u_H, v_H, h, tv, KH,  &
         DZ = ((0.5*(h(i,j,km1) + h(i,j,k))+GV%H_subroundoff)*GV%H_to_m)
         N2 = DRHO/DZ
         S2 = (DU*DU+DV*DV)/(DZ*DZ) 
-        Ri_Grad(k) = max(0.,N2)/max(S2,1.e-16)
+        CS%Ri_Grad(i,j,k) = N2/max(S2,1.e-16)
       enddo
 
       call  cvmix_coeffs_shear(Mdiff_out=KM(i,j,:), &
                                    Tdiff_out=KH(i,j,:), & 
-                                   RICH=Ri_Grad, &
+                                   RICH=CS%Ri_Grad(i,j,:), &
                                    nlev=G%ke,    &
                                    max_nlev=G%ke)
     enddo;
   enddo;
+
+  if (CS%id_Ri_grad > 0) then
+     call post_data(CS%id_Ri_grad, CS%Ri_grad, CS%diag)
+  endif
 
   return
 
@@ -166,7 +172,7 @@ logical function cvmix_shear_init(Time, G, GV, param_file, diag, CS)
   !  *tests to make sure multiple internal shear mixing routines
   !   are not enabled at the same time.
   !
-  type(time_type),         intent(in)    :: Time
+  type(time_type), target, intent(in)    :: Time
   type(ocean_grid_type),   intent(in)    :: G
   type(verticalGrid_type), intent(in)    :: GV
   type(param_file_type),   intent(in)    :: param_file
@@ -192,6 +198,9 @@ logical function cvmix_shear_init(Time, G, GV, param_file, diag, CS)
     return
   endif
   allocate(CS)
+
+  CS%diag => diag
+  CS%Time => Time
 
 ! Set default, read and log parameters
   call log_version(param_file, mod, version, &
@@ -238,10 +247,23 @@ logical function cvmix_shear_init(Time, G, GV, param_file, diag, CS)
                         KPP_exp=CS%KPP_exp)
 
   !Allocation and initialization
-  allocate( CS%N2( SZI_(G), SZJ_(G), SZK_(G)+1 ) );CS%N2(:,:,:) = 0.
-  allocate( CS%S2( SZI_(G), SZJ_(G), SZK_(G)+1 ) );CS%S2(:,:,:) = 0.
+  allocate( CS%Ri_Grad( SZI_(G), SZJ_(G), SZK_(G)+1 ) );CS%Ri_grad(:,:,:) = 0.
+
+  CS%id_Ri_grad = register_diag_field('ocean_model', 'Ri_grad', diag%axesTi, &
+       Time, 'Gradient Richardsonum number that is used', 'unitless')
 
 end function cvmix_shear_init
+
+subroutine cvmix_shear_end(CS)
+  type(cvmix_shear_CS), pointer :: CS
+
+  if (.not.associated(CS)) return
+
+  if (allocated(CS%Ri_grad))            deallocate(CS%Ri_Grad)
+
+  deallocate(CS)
+  
+end subroutine cvmix_shear_end
 
 logical function cvmix_shear_is_used(param_file)
   ! Reads the parameter "LMD94" and "PP81" and returns state.
