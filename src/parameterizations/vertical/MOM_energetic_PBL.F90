@@ -163,6 +163,7 @@ type, public :: energetic_PBL_CS ; private
                                          ! ocean depth for the iteration.
   logical :: Mixing_Diagnostics = .false. ! Will be true when outputing mixing
                                           !  length and velocity scale
+  character(3) :: VSTAR_MODE = 'FLX' !String for setting mode for VSTAR 
   type(diag_ctrl), pointer :: diag ! A structure that is used to regulate the
                              ! timing of diagnostic output.
 
@@ -968,6 +969,9 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             TKE_here = mech_TKE(i) + CS%wstar_ustar_coef*conv_PErel(i)
             if (TKE_here > 0.0) then
               vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
+              if (CS%VSTAR_MODE=='UST') then
+                vstar = max(vstar,CS%vstar_scale_fac * U_STAR)
+              endif
               hbs_here = GV%H_to_m * min(hb_hs(i,K), MixLen_shape(K))
               Mixing_Length_Used(k) = MAX(CS%min_mix_len,((h_tt*hbs_here)*vstar) / &
                   ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hbs_here) + vstar))
@@ -1020,6 +1024,9 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                 TKE_here = mech_TKE(i) + CS%wstar_ustar_coef*(conv_PErel(i)-PE_chg_max)
                 if (TKE_here > 0.0) then
                   vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
+                  if (CS%VSTAR_MODE=='UST') then
+                    vstar = max(vstar,CS%vstar_scale_fac * U_STAR)
+                  endif
                   hbs_here = GV%H_to_m * min(hb_hs(i,K), MixLen_shape(K))
                   Mixing_Length_Used(k) = max(CS%min_mix_len,((h_tt*hbs_here)*vstar) / &
                       ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hbs_here) + vstar))
@@ -1841,6 +1848,9 @@ subroutine energetic_PBL_init(Time, G, GV, param_file, diag, CS)
                  "True to use a fixed value of mstar, if false mstar depends \n"//&
                  "on the composite Obhukov length and Ekman length.","units=nondim",&
                  default=.true.)
+  call get_param(param_file, mod, "VSTAR_MODE", CS%VSTAR_MODE, &
+                 "Method to set VSTAR in EPBL for computing mixing coefficient.",&
+                 default='FLX')
   call get_param(param_file, mod, "NSTAR", CS%nstar, &
                  "The portion of the buoyant potential energy imparted by \n"//&
                  "surface fluxes that is available to drive entrainment \n"//&
