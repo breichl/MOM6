@@ -71,14 +71,14 @@ use MOM_cpu_clock,     only : CLOCK_MODULE_DRIVER, CLOCK_MODULE, CLOCK_ROUTINE
 use MOM_diag_mediator, only : post_data, register_diag_field, safe_alloc_ptr
 use MOM_diag_mediator, only : diag_ctrl, time_type
 use MOM_EOS,           only : calculate_density, calculate_TFreeze
-use MOM_EOS,           only : calculate_specific_vol_derivs
+use MOM_EOS,           only : calculate_specific_vol_derivs, calculate_density_derivs
 use MOM_error_handler, only : MOM_error, FATAL, WARNING, callTree_showQuery
 use MOM_error_handler, only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser,   only : get_param, log_version, param_file_type
 use MOM_forcing_type,  only : forcing, extractFluxes1d, forcing_SinglePointPrint
 use MOM_grid,          only : ocean_grid_type
 use MOM_io,            only : vardesc
-use MOM_shortwave_abs, only : absorbRemainingSW, optics_type
+use MOM_shortwave_abs, only : absorbRemainingSW, optics_type, sumSWoverBands
 use MOM_variables,     only : thermo_var_ptrs, vertvisc_type! , accel_diag_ptrs
 use MOM_verticalGrid,  only : verticalGrid_type
 
@@ -800,7 +800,8 @@ end subroutine diagnoseMLDbyDensityDifference
 !! and calculate the TKE implications of this heating.
 subroutine applyBoundaryFluxesInOut(CS, G, GV, dt, fluxes, optics, h, tv, &
                                     aggregate_FW_forcing, evap_CFL_limit, &
-                                    minimum_forcing_depth, cTKE, dSV_dT, dSV_dS)
+                                    minimum_forcing_depth, &
+                                    cTKE, dSV_dT, dSV_dS, SkinBuoyFlux )
   type(diabatic_aux_CS),                 pointer       :: CS !< Control structure for diabatic_aux
   type(ocean_grid_type),                 intent(in)    :: G  !< Grid structure
   type(verticalGrid_type),               intent(in)    :: GV !< ocean vertical grid structure
@@ -821,6 +822,8 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, dt, fluxes, optics, h, tv, &
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)), optional, intent(out) :: dSV_dT
   !> Partial derivative of specific a volume with potential salinity, in m3 kg-1 / (g kg-1).
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)), optional, intent(out) :: dSV_dS
+  !> Buoyancy flux at surface and associated with penetrative SW, in m2 s-3
+  real, dimension(SZI_(G),SZJ_(G)), optional, intent(out) :: SkinBuoyFlux
 
   ! Local variables
   integer, parameter :: maxGroundings = 5
@@ -839,16 +842,23 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, dt, fluxes, optics, h, tv, &
     netHeat,      &  ! heat (degC * H) via surface fluxes, excluding
                      ! Pen_SW_bnd and netMassOut
     netSalt,      &  ! surface salt flux ( g(salt)/m2 for non-Bouss and ppt*H for Bouss )
-    nonpenSW         ! non-downwelling SW, which is absorbed at ocean surface
-  real, dimension(SZI_(G), SZK_(G))                     :: h2d, T2d
+    nonpenSW,     &  ! non-downwelling SW, which is absorbed at ocean surface
+    SurfPressure, &
+    dRhodT,       &
+    dRhodS
+  real, dimension(SZI_(G), SZK_(G))                     :: h2d, T2d, S2d
   real, dimension(SZI_(G), SZK_(G))                     :: pen_TKE_2d, dSV_dT_2d
+  real, dimension(SZI_(G),SZK_(G)+1)                    :: netPen 
   real, dimension(max(optics%nbands,1),SZI_(G))         :: Pen_SW_bnd
   real, dimension(max(optics%nbands,1),SZI_(G),SZK_(G)) :: opacityBand
   real                                                  :: hGrounding(maxGroundings)
   real    :: Temp_in, Salin_in
   real    :: I_G_Earth, g_Hconv2
+  real    :: GoRho
   logical :: calculate_energetics
+  logical :: calculate_buoyancy
   integer :: i, j, is, ie, js, je, k, nz, n, nsw
+  integer :: start, npts
   character(len=45) :: mesg
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
@@ -861,10 +871,17 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, dt, fluxes, optics, h, tv, &
   Idt = 1.0/dt
 
   calculate_energetics = (present(cTKE) .and. present(dSV_dT) .and. present(dSV_dS))
+  calculate_buoyancy = present(SkinBuoyFlux)
   I_G_Earth = 1.0 / GV%g_Earth
   g_Hconv2 = GV%g_Earth * GV%H_to_kg_m2**2
 
   if (present(cTKE)) cTKE(:,:,:) = 0.0
+  if (calculate_buoyancy) then
+    SurfPressure(:) = 0.0
+    GoRho       = GV%g_Earth / GV%Rho0
+    start       = 1 + G%isc - G%isd
+    npts        = 1 + G%iec - G%isc
+  endif
 
   ! H_limit_fluxes is used by extractFluxes1d to scale down fluxes if the total
   ! depth of the ocean is vanishing. It does not (yet) handle a value of zero.
@@ -896,6 +913,7 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, dt, fluxes, optics, h, tv, &
     do k=1,nz ; do i=is,ie
       h2d(i,k) = h(i,j,k)
       T2d(i,k) = tv%T(i,j,k)
+      S2d(i,k) = tv%S(i,j,k)
       do n=1,nsw
         opacityBand(n,i,k) = (1.0 / GV%m_to_H)*optics%opacity_band(n,i,j,k)
       enddo
@@ -942,6 +960,29 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, dt, fluxes, optics, h, tv, &
                   H_limit_fluxes, CS%use_river_heat_content, CS%use_calving_heat_content, &
                   h2d, T2d, netMassInOut, netMassOut, netHeat, netSalt,                   &
                   Pen_SW_bnd, tv, aggregate_FW_forcing, nonpenSW)
+
+    ! Get buoyancy flux to return for ePBL before netHeat, netSalt are applied
+    if (Calculate_Buoyancy) then
+
+      ! Sum over bands and attenuate as a function of depth
+      ! netPen is the netSW as a function of depth
+      call sumSWoverBands(G, GV, h2d(:,:), opacityBand(:,:,:), nsw, j, dt, &
+           H_limit_fluxes, .true., pen_SW_bnd, netPen)
+
+      ! Density derivatives
+      call calculate_density_derivs(T2d(:,1), S2d(:,1), SurfPressure, &
+                                dRhodT, dRhodS, start, npts, tv%eqn_of_state)
+
+      ! 1. Adjust netSalt to reflect dilution effect of FW flux
+      ! 2. Add in the SW heating for purposes of calculating the net
+      ! surface buoyancy flux affecting the top layer.
+      ! 3. Convert to a buoyancy flux, excluding penetrating SW heating
+      SkinBuoyFlux(G%isc:G%iec,j) = - GoRho * ( dRhodS(G%isc:G%iec) * (netSalt(G%isc:G%iec) &
+                                    - S2d(G%isc:G%iec,1) * netMassInOut(G%isc:G%iec)* GV%H_to_m )&
+                                    + dRhodT(G%isc:G%iec) * ( netHeat(G%isc:G%iec) +        &
+                                    netPen(G%isc:G%iec,1))) * GV%H_to_m ! m^2/s^3
+
+    endif
 
     ! ea is for passive tracers
     do i=is,ie
@@ -1201,8 +1242,8 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, dt, fluxes, optics, h, tv, &
         CS%nonpenSW_diag(i,j) = nonpenSW(i)
       enddo
     endif
-
-  enddo ! j-loop finish
+    
+ enddo ! j-loop finish
 
   ! Post the diagnostics
   if (CS%id_createdH       > 0) call post_data(CS%id_createdH      , CS%createdH      , CS%diag)
