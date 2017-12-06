@@ -1761,7 +1761,7 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
 !                   fields.  Allocated here.
 !  (in)      restart_CS - A pointer to the restart control structure.
   type(vardesc) :: vd
-  logical :: use_kappa_shear, adiabatic, useKPP, useEPBL
+  logical :: use_kappa_shear, adiabatic, useKPP, useEPBL, useGOTM
   logical :: use_CVMix, MLE_use_PBL_MLD
   integer :: isd, ied, jsd, jed, nz
   character(len=40)  :: mdl = "MOM_set_visc"  ! This module's name.
@@ -1770,21 +1770,24 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
   call get_param(param_file, mdl, "ADIABATIC", adiabatic, default=.false., &
                  do_not_log=.true.)
   use_kappa_shear = .false. ; use_CVMix = .false. ;
-  useKPP = .false. ; useEPBL = .false.
+  useKPP = .false. ; useEPBL = .false. ; useGOTM = .false. ;
   if (.not.adiabatic) then
     use_kappa_shear = kappa_shear_is_used(param_file)
     use_CVMix = CVMix_shear_is_used(param_file)
     call get_param(param_file, mdl, "USE_KPP", useKPP, &
-                 "If true, turns on the [CVmix] KPP scheme of Large et al., 1984,\n"// &
+                 "If true, turns on the [CVmix] KPP scheme of Large et al., 1994,\n"// &
                  "to calculate diffusivities and non-local transport in the OBL.", &
                  default=.false., do_not_log=.true.)
+    call get_param(param_file, mdl, "USE_GOTM", useGOTM, &
+                "If true, use GOTM diffusivities.",      &
+                default=.false., do_not_log=.true.)   
     call get_param(param_file, mdl, "ENERGETICS_SFC_PBL", useEPBL, &
                  "If true, use an implied energetics planetary boundary \n"//&
                  "layer scheme to determine the diffusivity and viscosity \n"//&
                  "in the surface boundary layer.", default=.false., do_not_log=.true.)
   endif
 
-  if (use_kappa_shear .or. useKPP .or. useEPBL .or. use_CVMix) then
+  if (use_kappa_shear .or. useKPP .or. useEPBL .or. use_CVMix .or. useGOTM) then
     allocate(visc%Kd_turb(isd:ied,jsd:jed,nz+1)) ; visc%Kd_turb(:,:,:) = 0.0
     allocate(visc%TKE_turb(isd:ied,jsd:jed,nz+1)) ; visc%TKE_turb(:,:,:) = 0.0
     allocate(visc%Kv_turb(isd:ied,jsd:jed,nz+1)) ; visc%Kv_turb(:,:,:) = 0.0

@@ -4,3 +4,6 @@
 [submodule "pkg/GSW-Fortran"]
 	path = pkg/GSW-Fortran
 	url = https://github.com/TEOS-10/GSW-Fortran.git
+[submodule "pkg/GOTM"]
+	path = pkg/GOTM
+	url = https://github.com/gotm-model/code.git

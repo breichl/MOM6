@@ -36,6 +36,7 @@ use MOM_file_parser,         only : get_param, log_version, param_file_type, rea
 use MOM_forcing_type,        only : forcing, MOM_forcing_chksum
 use MOM_forcing_type,        only : calculateBuoyancyFlux2d, forcing_SinglePointPrint
 use MOM_geothermal,          only : geothermal, geothermal_init, geothermal_end, geothermal_CS
+use MOM_GOTM,                only : GOTM_CS, GOTM_init, GOTM_calculate
 use MOM_grid,                only : ocean_grid_type
 use MOM_io,                  only : vardesc, var_desc
 use MOM_int_tide_input,      only : set_int_tide_input, int_tide_input_init
@@ -142,9 +143,10 @@ type, public:: diabatic_CS ; private
                                            !! fluxes is applied, in m.
   real    :: evap_CFL_limit = 0.8    !< The largest fraction of a layer that can be
                                      !! evaporated in one time-step (non-dim).
-
+  logical :: useGOTM                 !< use GOTM TKE diffusivities
   logical :: useKPP                  !< use CVmix/KPP diffusivities and non-local transport
   logical :: salt_reject_below_ML    !< If true, add salt below mixed layer (layer mode only)
+  logical :: GOTMisPassive           !< If true, GOTM is in passive mode, not changing answers.
   logical :: KPPisPassive            !< If true, KPP is in passive mode, not changing answers.
   logical :: useConvection           !< If true, calculate large diffusivities when column
                                      !! is statically unstable.
@@ -212,6 +214,7 @@ type, public:: diabatic_CS ; private
   type(tracer_flow_control_CS), pointer :: tracer_flow_CSp       => NULL()
   type(optics_type),            pointer :: optics                => NULL()
   type(diag_to_Z_CS),           pointer :: diag_to_Z_CSp         => NULL()
+  type(GOTM_CS),                pointer :: GOTM_CSp              => NULL()
   type(KPP_CS),                 pointer :: KPP_CSp               => NULL()
   type(diffConvection_CS),      pointer :: Conv_CSp              => NULL()
   type(diapyc_energy_req_CS),   pointer :: diapyc_en_rec_CSp     => NULL()
@@ -659,6 +662,36 @@ subroutine diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, G, G
 
   endif  ! endif for KPP
 
+  if (CS%useGOTM) then
+    ! For now separate GOTM/CVMix set-up and calls.  Could set-ups be better integrated?
+!$OMP parallel default(none) shared(is,ie,js,je,nz,Kd_salt,Kd_int,visc,CS,Kd_heat)
+!$OMP do
+    do k=1,nz+1 ; do j=js,je ; do i=is,ie
+      Kd_salt(i,j,k) = Kd_int(i,j,k)
+      Kd_heat(i,j,k) = Kd_int(i,j,k)
+    enddo; enddo ; enddo
+    call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_turb )
+!$OMP end parallel
+!$OMP do
+    do k=1,nz+1 ; do j=js,je ; do i=is,ie
+       Kd_int(i,j,k) = min( Kd_salt(i,j,k),  Kd_heat(i,j,k) )
+    enddo ; enddo ; enddo
+    if (associated(visc%Kd_extra_S)) then
+!$OMP do
+      do k=1,nz+1 ; do j=js,je ; do i=is,ie
+        visc%Kd_extra_S(i,j,k) = Kd_salt(i,j,k) - Kd_int(i,j,k)
+      enddo ; enddo ; enddo
+    endif
+    if (associated(visc%Kd_extra_T)) then
+!$OMP do
+      do k=1,nz+1 ; do j=js,je ; do i=is,ie
+        visc%Kd_extra_T(i,j,k) = Kd_heat(i,j,k) - Kd_int(i,j,k)
+      enddo ; enddo ; enddo
+    endif
+  endif
+
+
   ! Check for static instabilities and increase Kd_int where unstable
   if (CS%useConvection) call diffConvection_calculate(CS%Conv_CSp, &
          G, GV, h, tv%T, tv%S, tv%eqn_of_state, Kd_int)
@@ -702,8 +735,8 @@ subroutine diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, G, G
     if (CS%debugConservation) call MOM_state_stats('differential_diffuse_T_S', u, v, h, tv%T, tv%S, G)
 
     ! increment heat and salt diffusivity.
-    ! CS%useKPP==.true. already has extra_T and extra_S included
-    if(.not. CS%useKPP) then
+    ! (CS%useKPP==.true. .or. CS%useGOTM==.true.) already has extra_T and extra_S included
+    if(.not. (CS%useKPP .or. CS%useGOTM) ) then
       do K=2,nz ; do j=js,je ; do i=is,ie
         Kd_heat(i,j,K) = Kd_heat(i,j,K) + visc%Kd_extra_T(i,j,K)
         Kd_salt(i,j,K) = Kd_salt(i,j,K) + visc%Kd_extra_S(i,j,K)
@@ -2111,6 +2144,8 @@ subroutine diabatic_driver_init(Time, G, GV, param_file, useALEalgorithm, diag, 
        cmor_standard_name='ocean_vertical_salt_diffusivity',                       &
        cmor_long_name='Ocean vertical salt diffusivity')
 
+  ! CS%useGOTM is set to True if GOTM is to be used, False otherwise.
+  CS%useGOTM = GOTM_init(param_file, G, diag, Time, CS%GOTM_CSp, passive=CS%GOTMisPassive)
   ! CS%useKPP is set to True if KPP-scheme is to be used, False otherwise.
   ! KPP_init() allocated CS%KPP_Csp and also sets CS%KPPisPassive
   CS%useKPP = KPP_init(param_file, G, diag, Time, CS%KPP_CSp, passive=CS%KPPisPassive)

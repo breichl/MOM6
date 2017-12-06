@@ -1,0 +1,1 @@
+../../../pkg/GOTM/src/turbulence/q2over2eq.F90
