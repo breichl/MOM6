@@ -103,6 +103,7 @@ type, public :: energetic_PBL_CS ; private
   real    :: vstar_scale_fac ! An overall nondimensional scaling factor
                              ! for vstar.  Making this larger increases the
                              ! diffusivity.
+  real    :: vstar_surf_frac   ! A surface condition multiplied by ustar for vstar
   real    :: Ekman_scale_coef ! A nondimensional scaling factor controlling
                              ! the inhibition of the diffusive length scale by
                              ! rotation.  Making this larger decreases the
@@ -159,6 +160,7 @@ type, public :: energetic_PBL_CS ; private
 
   integer :: MSTAR_MODE = 0  ! An integer to determine which formula is used to
                              !  set mstar
+  integer :: VSTAR_MODE = 0  ! An integer to determine which method is used to find vstar
   integer :: CONST_MSTAR=0,MLD_o_OBUKHOV=1,EKMAN_o_OBUKHOV=2
   logical :: MSTAR_FLATCAP=.true. !Set false to use asymptotic mstar cap.
   logical :: TKE_diagnostics = .false.
@@ -1114,7 +1116,13 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
             h_tt = htot(i) + h_tt_min
             TKE_here = mech_TKE(i) + CS%wstar_ustar_coef*conv_PErel(i)
             if (TKE_here > 0.0) then
-              vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
+              if (CS%vstar_mode==0) then
+                vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
+              elseif (CS%vstar_mode==1) then
+                FRAC = max(0.05,htot(i)/MLD_guess)
+                vstar = (CS%vstar_surf_frac*U_Star + &
+                         (CS%wstar_ustar_coef*conv_PErel(i)*I_dtrho)**C1_3)*FRAC
+              endif
               hbs_here = GV%H_to_m * min(hb_hs(i,K), MixLen_shape(K))
               Mixing_Length_Used(k) = MAX(CS%min_mix_len,((h_tt*hbs_here)*vstar) / &
                   ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hbs_here) + vstar))
@@ -1166,7 +1174,13 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                 ! Does MKE_src need to be included in the calculation of vstar here?
                 TKE_here = mech_TKE(i) + CS%wstar_ustar_coef*(conv_PErel(i)-PE_chg_max)
                 if (TKE_here > 0.0) then
-                  vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
+                  if (CS%vstar_mode==0) then
+                    vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
+                  elseif (CS%vstar_mode==1) then
+                    FRAC = max(0.05,htot(i)/MLD_guess)
+                    vstar = (CS%vstar_surf_frac*U_Star + &
+                         (CS%wstar_ustar_coef*conv_PErel(i)*I_dtrho)**C1_3)*FRAC
+                  endif
                   hbs_here = GV%H_to_m * min(hb_hs(i,K), MixLen_shape(K))
                   Mixing_Length_Used(k) = max(CS%min_mix_len,((h_tt*hbs_here)*vstar) / &
                       ((CS%Ekman_scale_coef * absf(i)) * (h_tt*hbs_here) + vstar))
@@ -2082,6 +2096,14 @@ subroutine energetic_PBL_init(Time, G, GV, param_file, diag, CS)
 ! Set default, read and log parameters
   call log_version(param_file, mdl, version, "")
 
+  call get_param(param_file, mdl, "VSTAR_MODE", CS%mstar_mode, &
+                 "An integer switch for how to compute VSTAR. \n"//&
+                 "    0 for old  vstar\n"//&
+                 "    1 for new vstar.",&
+                 "units=nondim",default=0)
+  call get_param(param_file, mdl, "VSTAR_SURF_FRAC", CS%mstar, &
+                 "The proportionality times ustar to set vstar to at the surface.",&
+                 "units=nondim", default=1.2)
   call get_param(param_file, mdl, "MSTAR_MODE", CS%mstar_mode, &
                  "An integer switch for how to compute MSTAR. \n"//&
                  "    0 for constant MSTAR\n"//&
