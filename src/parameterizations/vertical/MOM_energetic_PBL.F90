@@ -161,7 +161,7 @@ type, public :: energetic_PBL_CS ; private
   integer :: MSTAR_MODE = 0  ! An integer to determine which formula is used to
                              !  set mstar
   integer :: VSTAR_MODE = 0  ! An integer to determine which method is used to find vstar
-  integer :: CONST_MSTAR=0,MLD_o_OBUKHOV=1,EKMAN_o_OBUKHOV=2
+  integer :: CONST_MSTAR=0,MLD_o_OBUKHOV=1,EKMAN_o_OBUKHOV=2, MSTAR_OM17=3
   logical :: MSTAR_FLATCAP=.true. !Set false to use asymptotic mstar cap.
   logical :: TKE_diagnostics = .false.
   logical :: Use_LT = .false. ! Flag for using LT in Energy calculation
@@ -462,6 +462,9 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
   real :: dKddt_h_Newt ! The change between guesses at Kddt_h(K) with Newton's method, in H.
   real :: Kddt_h_newt  ! The Newton's method next guess for Kddt_h(K), in H.
   real :: exp_kh    ! The nondimensional decay of TKE across a layer, ND.
+  real :: FRAC
+  real :: neutral_c1, neutral_c2, neutral_c3, stable_c1, stable_c2
+  real :: MSTAR_N, MSTAR_S
   logical :: use_Newt  ! Use Newton's method for the next guess at Kddt_h(K).
   logical :: convectively_stable
   logical, dimension(SZI_(G)) :: &
@@ -834,6 +837,14 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                                  ! 3rd term for rotation (Ekman length) limited
                                  mstar_ROT)))
             endif!cap for mstar_mode==2
+            elseif (CS%MSTAR_MODE.eq.CS%MSTAR_OM17) then
+            neutral_c1 = 0.275; neutral_c2 = 8.0 ; neutral_c3 = -5.0
+            MSTAR_N = neutral_c1 * ( 1.0 - ( 1.+neutral_c2 * &
+                 exp( neutral_c3 * MLD_GUESS * absf(i) / u_star) )**-1.0 )
+            stable_c1=0.2; stable_c2 = 0.4
+            MSTAR_S = stable_c1 * (bf_stable**2*MLD_GUESS &
+                 / ( u_star**5 * absf(i) ) ) **stable_c2
+            MSTAR_MIX = MSTAR_N + MSTAR_S
           endif!mstar_mode==1 or ==2
           ! Adjustment for unstable buoyancy flux.
           !  Convection reduces mechanical mixing because there
@@ -1119,9 +1130,10 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
               if (CS%vstar_mode==0) then
                 vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
               elseif (CS%vstar_mode==1) then
-                FRAC = max(0.05,htot(i)/MLD_guess)
-                vstar = (CS%vstar_surf_frac*U_Star + &
+                FRAC = max(0.05,1.-htot(i)/MLD_guess)
+                vstar = cs%vstar_scale_fac * (CS%vstar_surf_frac*U_Star + &
                          (CS%wstar_ustar_coef*conv_PErel(i)*I_dtrho)**C1_3)*FRAC
+                
               endif
               hbs_here = GV%H_to_m * min(hb_hs(i,K), MixLen_shape(K))
               Mixing_Length_Used(k) = MAX(CS%min_mix_len,((h_tt*hbs_here)*vstar) / &
@@ -1177,8 +1189,8 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                   if (CS%vstar_mode==0) then
                     vstar = CS%vstar_scale_fac * (I_dtrho*TKE_here)**C1_3
                   elseif (CS%vstar_mode==1) then
-                    FRAC = max(0.05,htot(i)/MLD_guess)
-                    vstar = (CS%vstar_surf_frac*U_Star + &
+                    FRAC = max(0.05,1.-htot(i)/MLD_guess)
+                    vstar = cs%vstar_scale_fac * (CS%vstar_surf_frac*U_Star + &
                          (CS%wstar_ustar_coef*conv_PErel(i)*I_dtrho)**C1_3)*FRAC
                   endif
                   hbs_here = GV%H_to_m * min(hb_hs(i,K), MixLen_shape(K))
@@ -2096,12 +2108,12 @@ subroutine energetic_PBL_init(Time, G, GV, param_file, diag, CS)
 ! Set default, read and log parameters
   call log_version(param_file, mdl, version, "")
 
-  call get_param(param_file, mdl, "VSTAR_MODE", CS%mstar_mode, &
+  call get_param(param_file, mdl, "VSTAR_MODE", CS%vstar_mode, &
                  "An integer switch for how to compute VSTAR. \n"//&
                  "    0 for old  vstar\n"//&
                  "    1 for new vstar.",&
                  "units=nondim",default=0)
-  call get_param(param_file, mdl, "VSTAR_SURF_FRAC", CS%mstar, &
+  call get_param(param_file, mdl, "VSTAR_SURF_FRAC", CS%vstar_surf_frac, &
                  "The proportionality times ustar to set vstar to at the surface.",&
                  "units=nondim", default=1.2)
   call get_param(param_file, mdl, "MSTAR_MODE", CS%mstar_mode, &
