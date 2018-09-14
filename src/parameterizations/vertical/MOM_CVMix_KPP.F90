@@ -159,6 +159,7 @@ type, public :: KPP_CS ; private
   real, allocatable, dimension(:,:)   :: Ssurf     !< Salinity of surface layer (ppt)
   real, allocatable, dimension(:,:)   :: Usurf     !< i-velocity of surface layer (m/s)
   real, allocatable, dimension(:,:)   :: Vsurf     !< j-velocity of surface layer (m/s)
+  real, allocatable, dimension(:,:)   :: Langmuir_Num !< Langmuir number
   real, allocatable, dimension(:,:,:) :: EnhK      !< Enhancement for mixing coefficient
   real, allocatable, dimension(:,:,:) :: EnhVt2    !< Enhancement for Vt2
 
@@ -170,7 +171,7 @@ contains
 
 !> Initialize the CVMix KPP module and set up diagnostics
 !! Returns True if KPP is to be used, False otherwise.
-logical function KPP_init(paramFile, G, diag, Time, CS, passive, Waves)
+logical function KPP_init(paramFile, G, diag, Time, CS, passive, waves)
 
   ! Arguments
   type(param_file_type),   intent(in)    :: paramFile !< File parser
@@ -531,6 +532,8 @@ logical function KPP_init(paramFile, G, diag, Time, CS, passive, Waves)
   CS%kOBL(:,:) = 0.
   allocate( CS%Vt2( SZI_(G), SZJ_(G), SZK_(G) ) )
   CS%Vt2(:,:,:) = 0.
+  allocate( CS%Langmuir_Num( SZI_(G), SZJ_(G) ) )
+  CS%Langmuir_Num(:,:) = 0.
   if (CS%id_OBLdepth_original > 0) allocate( CS%OBLdepth_original( SZI_(G), SZJ_(G) ) )
 
   allocate( CS%OBLdepthprev( SZI_(G), SZJ_(G) ) );CS%OBLdepthprev(:,:)=0.0
@@ -571,7 +574,7 @@ end function KPP_init
 !> KPP vertical diffusivity/viscosity and non-local tracer transport
 subroutine KPP_calculate(CS, G, GV, h, uStar, &
                          buoyFlux, Kt, Ks, Kv, nonLocalTransHeat,&
-                         nonLocalTransScalar, Waves)
+                         nonLocalTransScalar, waves)
 
   ! Arguments
   type(KPP_CS),                               pointer       :: CS    !< Control structure
@@ -708,10 +711,10 @@ subroutine KPP_calculate(CS, G, GV, h, uStar, &
         if (CS%LT_K_METHOD==LT_K_MODE_CONSTANT) then
            LangEnhK = CS%KPP_K_ENH_FAC
         elseif (CS%LT_K_METHOD==LT_K_MODE_VR12) then
-           LangEnhK = min(10.,sqrt(1.+(1.5*WAVES%LangNum(i,j))**(-2) + &
-                (5.4*WAVES%LangNum(i,j))**(-4)))
+           LangEnhK = min(10.,sqrt(1.+(1.5*CS%Langmuir_Num(i,j))**(-2) + &
+                (5.4*CS%Langmuir_Num(i,j))**(-4)))
         elseif (CS%LT_K_METHOD==LT_K_MODE_RW16) then
-           LangEnhK = min(2.25, 1. + 1./WAVES%LangNum(i,j))
+           LangEnhK = min(2.25, 1. + 1./CS%Langmuir_Num(i,j))
         else
            !This shouldn't be reached.
            !call MOM_error(WARNING,"Unexpected behavior in MOM_CVMix_KPP, see error in LT_K_ENHANCEMENT")
@@ -861,7 +864,7 @@ end subroutine KPP_calculate
 
 
 !> Compute OBL depth
-subroutine KPP_compute_BLD(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, buoyFlux, Waves)
+subroutine KPP_compute_BLD(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, buoyFlux, waves)
 
   ! Arguments
   type(KPP_CS),                               pointer       :: CS    !< Control structure
@@ -1057,15 +1060,15 @@ subroutine KPP_compute_BLD(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, buoyFlux,
       enddo ! k-loop finishes
 
       if (CS%LT_K_ENHANCEMENT .or. CS%LT_VT2_ENHANCEMENT) then
-        if (.not.(present(WAVES).and.associated(WAVES))) then
-          call MOM_error(FATAL,"Trying to use input WAVES information in KPP\n"//&
-               "without activating USEWAVES")
-        endif
+        !if (.not.(present(WAVES).and.associated(WAVES))) then
+        !  call MOM_error(WARNING,"Trying to use input WAVES information in KPP "//&
+        !       "without activating USEWAVES")
+        !endif
         !For now get Langmuir number based on prev. MLD (otherwise must compute 3d LA)
         MLD_GUESS = max( 1., abs(CS%OBLdepthprev(i,j) ) )
         call get_Langmuir_Number( LA, G, GV, MLD_guess, surfFricVel, I, J, &
              H=H(i,j,:), U_H=U_H, V_H=V_H, WAVES=WAVES)
-        WAVES%LangNum(i,j)=LA
+        CS%Langmuir_Num(i,j)=LA
       endif
 
 
@@ -1113,19 +1116,19 @@ subroutine KPP_compute_BLD(CS, G, GV, h, Temp, Salt, u, v, EOS, uStar, buoyFlux,
           enddo
         elseif (CS%LT_VT2_METHOD==LT_VT2_MODE_VR12) then
           do k=1,G%ke
-             LangEnhVT2(k) = min(10.,sqrt(1.+(1.5*WAVES%LangNum(i,j))**(-2) + &
-                  (5.4*WAVES%LangNum(i,j))**(-4)))
+             LangEnhVT2(k) = min(10.,sqrt(1.+(1.5*CS%Langmuir_Num(i,j))**(-2) + &
+                  (5.4*CS%Langmuir_Num(i,j))**(-4)))
           enddo
         elseif (CS%LT_VT2_METHOD==LT_VT2_MODE_RW16) then
           do k=1,G%ke
-            LangEnhVT2(k) = min(2.25, 1. + 1./WAVES%LangNum(i,j))
+            LangEnhVT2(k) = min(2.25, 1. + 1./CS%Langmuir_Num(i,j))
           enddo
         elseif (CS%LT_VT2_METHOD==LT_VT2_MODE_LF17) then
           CS%CS=cvmix_get_kpp_real('c_s',CS%KPP_params)
           do k=1,G%ke
             WST = (max(0.,-buoyflux(i,j,1))*(-cellHeight(k)))**(1./3.)
             LangEnhVT2(k) = sqrt((0.15*WST**3. + 0.17*surfFricVel**3.* &
-                 (1.+0.49*WAVES%LangNum(i,j)**(-2.)))  / &
+                 (1.+0.49*CS%Langmuir_Num(i,j)**(-2.)))  / &
                  (0.2*ws_1d(k)**3/(CS%cs*CS%surf_layer_ext*CS%vonKarman**4.)))
           enddo
         else
