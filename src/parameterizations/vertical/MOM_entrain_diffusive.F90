@@ -1,54 +1,7 @@
+!> Diapycnal mixing and advection in isopycnal mode
 module MOM_entrain_diffusive
 
 ! This file is part of MOM6. See LICENSE.md for the license.
-
-!********+*********+*********+*********+*********+*********+*********+**
-!*                                                                     *
-!*  By Robert Hallberg, September 1997 - July 2000                     *
-!*                                                                     *
-!*    This file contains the subroutines that implement diapycnal      *
-!*  mixing and advection in isopycnal layers.  The main subroutine,    *
-!*  calculate_entrainment, returns the entrainment by each layer       *
-!*  across the interfaces above and below it.  These are calculated    *
-!*  subject to the constraints that no layers can be driven to neg-    *
-!*  ative thickness and that the each layer maintains its target       *
-!*  density, using the scheme described in Hallberg (MWR 2000). There  *
-!*  may or may not be a bulk mixed layer above the isopycnal layers.   *
-!*  The solution is iterated until the change in the entrainment       *
-!*  between successive iterations is less than some small tolerance.   *
-!*                                                                     *
-!*    The dual-stream entrainment scheme of MacDougall and Dewar       *
-!*  (JPO 1997) is used for combined diapycnal advection and diffusion, *
-!*  modified as described in Hallberg (MWR 2000) to be solved          *
-!*  implicitly in time.  Any profile of diffusivities may be used.     *
-!*  Diapycnal advection is fundamentally the residual of diapycnal     *
-!*  diffusion, so the fully implicit upwind differencing scheme that   *
-!*  is used is entirely appropriate.  The downward buoyancy flux in    *
-!*  each layer is determined from an implicit calculation based on     *
-!*  the previously calculated flux of the layer above and an estim-    *
-!*  ated flux in the layer below.  This flux is subject to the foll-   *
-!*  owing conditions:  (1) the flux in the top and bottom layers are   *
-!*  set by the boundary conditions, and (2) no layer may be driven     *
-!*  below an Angstrom thickness.  If there is a bulk mixed layer, the  *
-!*  mixed and buffer layers are treated as Eulerian layers, whose      *
-!*  thicknesses only change due to entrainment by the interior layers. *
-!*                                                                     *
-!*    In addition, the model may adjust the fluxes to drive the layer  *
-!*  densities (sigma 2?) back toward their targer values.              *
-!*                                                                     *
-!*     A small fragment of the grid is shown below:                    *
-!*                                                                     *
-!*    j+1  x ^ x ^ x   At x:  q                                        *
-!*    j+1  > o > o >   At ^:  v                                        *
-!*    j    x ^ x ^ x   At >:  u                                        *
-!*    j    > o > o >   At o:  h, buoy, T, S, ea, eb, etc.              *
-!*    j-1  x ^ x ^ x                                                   *
-!*        i-1  i  i+1  At x & ^:                                       *
-!*           i  i+1    At > & o:                                       *
-!*                                                                     *
-!*  The boundaries always run through q grid points (x).               *
-!*                                                                     *
-!********+*********+*********+*********+*********+*********+*********+**
 
 use MOM_diag_mediator, only : post_data, register_diag_field, safe_alloc_ptr
 use MOM_diag_mediator, only : diag_ctrl, time_type
@@ -66,19 +19,19 @@ implicit none ; private
 
 public entrainment_diffusive, entrain_diffusive_init, entrain_diffusive_end
 
+!> The control structure holding parametes for the MOM_entrain_diffusive module
 type, public :: entrain_diffusive_CS ; private
-  logical :: bulkmixedlayer  ! If true, a refined bulk mixed layer is used with
-                             ! GV%nk_rho_varies variable density mixed & buffer
-                             ! layers.
-  logical :: correct_density ! If true, the layer densities are restored toward
-                             ! their target variables by the diapycnal mixing.
-  integer :: max_ent_it      ! The maximum number of iterations that may be
-                             ! used to calculate the diapycnal entrainment.
-  real    :: Tolerance_Ent   ! The tolerance with which to solve for entrainment
-                             ! values, in m.
-  type(diag_ctrl), pointer :: diag => NULL() ! A structure that is used to
-                             ! regulate the timing of diagnostic output.
-  integer :: id_Kd = -1, id_diff_work = -1
+  logical :: bulkmixedlayer  !< If true, a refined bulk mixed layer is used with
+                             !! GV%nk_rho_varies variable density mixed & buffer layers.
+  logical :: correct_density !< If true, the layer densities are restored toward
+                             !! their target variables by the diapycnal mixing.
+  integer :: max_ent_it      !< The maximum number of iterations that may be used to
+                             !! calculate the diapycnal entrainment.
+  real    :: Tolerance_Ent   !< The tolerance with which to solve for entrainment values, in m.
+  type(diag_ctrl), pointer :: diag => NULL() !< A structure that is used to
+                             !! regulate the timing of diagnostic output.
+  integer :: id_Kd = -1      !< Diagnostic ID for diffusivity
+  integer :: id_diff_work = -1 !< Diagnostic ID for mixing work
 end type entrain_diffusive_CS
 
 contains
@@ -1269,7 +1222,8 @@ subroutine determine_dSkb(h_bl, Sref, Ent_bl, E_kb, is, ie, kmb, G, GV, limit, &
                                                               !! around the buffer layers, in H.
   real, dimension(SZI_(G)),           intent(in)    :: E_kb   !< The entrainment by the top interior
                                                               !! layer, in H.
-  integer,                            intent(in)    :: is, ie !< The range of i-indices to work on.
+  integer,                            intent(in)    :: is     !< The start of the i-index range to work on.
+  integer,                            intent(in)    :: ie     !< The end of the i-index range to work on.
   integer,                            intent(in)    :: kmb    !< The number of mixed and buffer layers.
   logical,                            intent(in)    :: limit  !< If true, limit dSkb and dSlay to
                                                               !! avoid negative values.
@@ -1672,7 +1626,8 @@ subroutine determine_Ea_kb(h_bl, dtKd_kb, Sref, I_dSkbp1, Ent_bl, ea_kbp1, &
   real, dimension(SZI_(G)),         intent(in)  :: max_eakb !< The maximum permissible rate of
                                                             !! entrainment, in H.
   integer,                          intent(in)  :: kmb      !< The number of mixed and buffer layers.
-  integer,                          intent(in)  :: is, ie   !< The range of i-indices to work on.
+  integer,                          intent(in)  :: is       !< The start of the i-index range to work on.
+  integer,                          intent(in)  :: ie       !< The end of the i-index range to work on.
   logical, dimension(SZI_(G)),      intent(in)  :: do_i     !< A logical variable indicating which
                                                             !! i-points to work on.
   type(entrain_diffusive_CS),       pointer     :: CS       !< This module's control structure.
@@ -1682,11 +1637,12 @@ subroutine determine_Ea_kb(h_bl, dtKd_kb, Sref, I_dSkbp1, Ent_bl, ea_kbp1, &
   real, dimension(SZI_(G)), optional, intent(out) :: error  !< The error (locally defined in this
                                                             !! routine) associated with the returned
                                                             !! solution.
-  real, dimension(SZI_(G)), optional, intent(in)  :: err_min_eakb0, err_max_eakb0 !< The errors
-                                                            !! (locally defined) associated with
-                                                            !! min_eakb and max_eakb when ea_kbp1
-                                                            !! = 0, returned from a previous call
-                                                            !! to this routine.
+  real, dimension(SZI_(G)), optional, intent(in)  :: err_min_eakb0 !< The errors (locally defined)
+                                                            !! associated with min_eakb when ea_kbp1 = 0,
+                                                            !! returned from a previous call to this fn.
+  real, dimension(SZI_(G)), optional, intent(in)  :: err_max_eakb0 !< The errors (locally defined)
+                                                            !! associated with min_eakb when ea_kbp1 = 0,
+                                                            !! returned from a previous call to this fn.
   real, dimension(SZI_(G)), optional, intent(out) :: F_kb   !< The entrainment from below by the
                                                             !! uppermost interior layer
                                                             !! corresponding to the returned
@@ -1904,7 +1860,8 @@ subroutine find_maxF_kb(h_bl, Sref, Ent_bl, I_dSkbp1, min_ent_in, max_ent_in, &
   real, dimension(SZI_(G)),   intent(in)  :: max_ent_in !< The maximum value of ent to search,
                                                       !! in H.
   integer,                    intent(in)  :: kmb      !< The number of mixed and buffer layers.
-  integer,                    intent(in)  :: is, ie   !< The range of i-indices to work on.
+  integer,                    intent(in)  :: is       !< The start of the i-index range to work on.
+  integer,                    intent(in)  :: ie       !< The end of the i-index range to work on.
   type(entrain_diffusive_CS), pointer     :: CS       !< This module's control structure.
   real, dimension(SZI_(G)),   intent(out) :: maxF     !< The maximum value of F
                                                       !! = ent*ds_kb*I_dSkbp1 found in the range
@@ -2248,5 +2205,36 @@ subroutine entrain_diffusive_end(CS)
   if (associated(CS)) deallocate(CS)
 
 end subroutine entrain_diffusive_end
+
+!> \namespace mom_entrain_diffusive
+!!
+!! By Robert Hallberg, September 1997 - July 2000
+!!
+!!   This file contains the subroutines that implement diapycnal
+!! mixing and advection in isopycnal layers.  The main subroutine,
+!! calculate_entrainment, returns the entrainment by each layer
+!! across the interfaces above and below it.  These are calculated
+!! subject to the constraints that no layers can be driven to neg-
+!! ative thickness and that the each layer maintains its target
+!! density, using the scheme described in Hallberg (MWR 2000). There
+!! may or may not be a bulk mixed layer above the isopycnal layers.
+!! The solution is iterated until the change in the entrainment
+!! between successive iterations is less than some small tolerance.
+!!
+!!   The dual-stream entrainment scheme of MacDougall and Dewar
+!! (JPO 1997) is used for combined diapycnal advection and diffusion,
+!! modified as described in Hallberg (MWR 2000) to be solved
+!! implicitly in time.  Any profile of diffusivities may be used.
+!! Diapycnal advection is fundamentally the residual of diapycnal
+!! diffusion, so the fully implicit upwind differencing scheme that
+!! is used is entirely appropriate.  The downward buoyancy flux in
+!! each layer is determined from an implicit calculation based on
+!! the previously calculated flux of the layer above and an estim-
+!! ated flux in the layer below.  This flux is subject to the foll-
+!! owing conditions:  (1) the flux in the top and bottom layers are
+!! set by the boundary conditions, and (2) no layer may be driven
+!! below an Angstrom thickness.  If there is a bulk mixed layer, the
+!! mixed and buffer layers are treated as Eulerian layers, whose
+!! thicknesses only change due to entrainment by the interior layers.
 
 end module MOM_entrain_diffusive

@@ -70,43 +70,52 @@ type, public :: hor_visc_CS ; private
   real    :: Kh_aniso        !< The anisotropic viscosity in m2 s-1.
   logical :: dynamic_aniso   !< If true, the anisotropic viscosity is recomputed as a function
                              !! of state. This is set depending on ANISOTROPIC_MODE.
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: &
-    Kh_bg_xx,        &!< The background Laplacian viscosity at h points, in units
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: Kh_bg_xx
+                      !< The background Laplacian viscosity at h points, in units
                       !! of m2 s-1. The actual viscosity may be the larger of this
                       !! viscosity and the Smagorinsky and Leith viscosities.
-    Kh_bg_2d,        &!< The background Laplacian viscosity at h points, in units
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: Kh_bg_2d
+                      !< The background Laplacian viscosity at h points, in units
                       !! of m2 s-1. The actual viscosity may be the larger of this
                       !! viscosity and the Smagorinsky and Leith viscosities.
-    Ah_bg_xx,        &!< The background biharmonic viscosity at h points, in units
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: Ah_bg_xx
+                      !< The background biharmonic viscosity at h points, in units
                       !! of m4 s-1. The actual viscosity may be the larger of this
                       !! viscosity and the Smagorinsky and Leith viscosities.
-    Kh_Max_xx,       &!< The maximum permitted Laplacian viscosity, m2 s-1.
-    Ah_Max_xx,       &!< The maximum permitted biharmonic viscosity, m4 s-1.
-    Biharm_Const2_xx,&!< A constant relating the biharmonic viscosity to the
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: Biharm_Const2_xx
+                      !< A constant relating the biharmonic viscosity to the
                       !! square of the velocity shear, in m4 s.  This value is
                       !! set to be the magnitude of the Coriolis terms once the
                       !! velocity differences reach a value of order 1/2 MAXVEL.
-    reduction_xx,    &!< The amount by which stresses through h points are reduced
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: reduction_xx
+                      !< The amount by which stresses through h points are reduced
                       !! due to partial barriers. Nondimensional.
-    n1n2_h,          &!< Factor n1*n2 in the anisotropic direction tensor at h-points
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: &
+    Kh_Max_xx,      & !< The maximum permitted Laplacian viscosity, m2 s-1.
+    Ah_Max_xx,      & !< The maximum permitted biharmonic viscosity, m4 s-1.
+    n1n2_h,         & !< Factor n1*n2 in the anisotropic direction tensor at h-points
     n1n1_m_n2n2_h     !< Factor n1**2-n2**2 in the anisotropic direction tensor at h-points
 
-  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEMB_PTR_) :: &
-    Kh_bg_xy,        &!< The background Laplacian viscosity at q points, in units
+  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEMB_PTR_) :: Kh_bg_xy
+                      !< The background Laplacian viscosity at q points, in units
                       !! of m2 s-1. The actual viscosity may be the larger of this
                       !! viscosity and the Smagorinsky and Leith viscosities.
-    Ah_bg_xy,        &!< The background biharmonic viscosity at q points, in units
+  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEMB_PTR_) :: Ah_bg_xy
+                      !< The background biharmonic viscosity at q points, in units
                       !! of m4 s-1. The actual viscosity may be the larger of this
                       !! viscosity and the Smagorinsky and Leith viscosities.
-    Kh_Max_xy,       &!< The maximum permitted Laplacian viscosity, m2 s-1.
-    Ah_Max_xy,       &!< The maximum permitted biharmonic viscosity, m4 s-1.
-    Biharm_Const2_xy,&!< A constant relating the biharmonic viscosity to the
+  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEMB_PTR_) :: Biharm_Const2_xy
+                      !< A constant relating the biharmonic viscosity to the
                       !! square of the velocity shear, in m4 s.  This value is
                       !! set to be the magnitude of the Coriolis terms once the
                       !! velocity differences reach a value of order 1/2 MAXVEL.
-    reduction_xy,    &!! The amount by which stresses through q points are reduced
+  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEMB_PTR_) :: reduction_xy
+                      !< The amount by which stresses through q points are reduced
                       !! due to partial barriers. Nondimensional.
-    n1n2_q,          &!< Factor n1*n2 in the anisotropic direction tensor at q-points
+  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEMB_PTR_) :: &
+    Kh_Max_xy,      & !< The maximum permitted Laplacian viscosity, m2 s-1.
+    Ah_Max_xy,      & !< The maximum permitted biharmonic viscosity, m4 s-1.
+    n1n2_q,         & !< Factor n1*n2 in the anisotropic direction tensor at q-points
     n1n1_m_n2n2_q     !< Factor n1**2-n2**2 in the anisotropic direction tensor at q-points
 
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_) :: &
@@ -123,7 +132,8 @@ type, public :: hor_visc_CS ; private
     Idx2dyCu, & !< 1/(dx^2 dy) at u points, in m-3
     Idxdy2u     !< 1/(dx dy^2) at u points, in m-3
   real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_) :: &
-    Idx2dyCv, Idxdy2v   ! 1/(dx^2 dy) and 1/(dx dy^2) at v points, in m-3
+    Idx2dyCv, & !< 1/(dx^2 dy) at v points, in m-3
+    Idxdy2v     !< 1/(dx dy^2) at v points, in m-3
 
   ! The following variables are precalculated time-invariant combinations of
   ! parameters and metric terms.
@@ -139,7 +149,7 @@ type, public :: hor_visc_CS ; private
     Laplac3_Const_xy, & !< Laplacian  metric-dependent constants (nondim)
     Biharm5_Const_xy    !< Biharmonic metric-dependent constants (nondim)
 
-  type(diag_ctrl), pointer :: diag => NULL() ! structure to regulate diagnostics
+  type(diag_ctrl), pointer :: diag => NULL() !< structure to regulate diagnostics
 
   !>@{
   !! Diagnostic id
@@ -306,17 +316,17 @@ subroutine horizontal_viscosity(u, v, h, diffu, diffv, MEKE, VarMix, G, GV, CS, 
   ! Toggle whether to use a Laplacian viscosity derived from MEKE
   use_MEKE_Ku = associated(MEKE%Ku)
 
-!$OMP parallel do default(none) shared(Isq,Ieq,Jsq,Jeq,nz,CS,G,GV,u,v,is,js,ie,je,h,  &
-!$OMP                                  rescale_Kh,VarMix,h_neglect,h_neglect3,        &
-!$OMP                                  Kh_h,Ah_h,Kh_q,Ah_q,diffu,apply_OBC,OBC,diffv, &
-!$OMP                                  find_FrictWork,FrictWork,use_MEKE_Ku,MEKE,     &
-!$OMP                                  mod_Leith, legacy_bound)                       &
-!$OMP                          private(u0, v0, sh_xx, str_xx, visc_bound_rem,         &
-!$OMP                                  sh_xy, str_xy, Ah, Kh, AhSm, KhSm, dvdx, dudy, &
-!$OMP                                  bhstr_xx, bhstr_xy,FatH,RoScl, hu, hv, h_u, h_v, &
-!$OMP                                  vort_xy,vort_xy_dx,vort_xy_dy,Vort_mag,AhLth,KhLth, &
-!$OMP                                  div_xx, div_xx_dx, div_xx_dy,                  &
-!$OMP                                  Shear_mag, h2uq, h2vq, hq, Kh_scale, hrat_min)
+  !$OMP parallel do default(none) shared(Isq,Ieq,Jsq,Jeq,nz,CS,G,GV,u,v,is,js,ie,je,h,  &
+  !$OMP                                  rescale_Kh,VarMix,h_neglect,h_neglect3,        &
+  !$OMP                                  Kh_h,Ah_h,Kh_q,Ah_q,diffu,apply_OBC,OBC,diffv, &
+  !$OMP                                  find_FrictWork,FrictWork,use_MEKE_Ku,MEKE,     &
+  !$OMP                                  mod_Leith, legacy_bound)                       &
+  !$OMP                          private(u0, v0, sh_xx, str_xx, visc_bound_rem,         &
+  !$OMP                                  sh_xy, str_xy, Ah, Kh, AhSm, KhSm, dvdx, dudy, &
+  !$OMP                                  bhstr_xx, bhstr_xy,FatH,RoScl, hu, hv, h_u, h_v, &
+  !$OMP                                  vort_xy,vort_xy_dx,vort_xy_dy,Vort_mag,AhLth,KhLth, &
+  !$OMP                                  div_xx, div_xx_dx, div_xx_dy, local_strain,    &
+  !$OMP                                  Shear_mag, h2uq, h2vq, hq, Kh_scale, hrat_min)
   do k=1,nz
 
     ! The following are the forms of the horizontal tension and horizontal
@@ -1847,7 +1857,7 @@ end subroutine hor_visc_end
 !! approach was generalized in Smith and McWilliams, 2003. We use the second form of their
 !! two coefficient anisotropic viscosity (section 4.3). We also replace their
 !! \f$A^\prime\f$ nd $D$ such that \f$2A^\prime = 2 \kappa_h + D\f$ and
-!! \f$\kappa_a = D$ so that \f$\kappa_h\f$ can be considered the isotropic
+!! \f$\kappa_a = D\f$ so that \f$\kappa_h\f$ can be considered the isotropic
 !! viscosity and \f$\kappa_a=D\f$ can be consider the anisotropic viscosity. The
 !! direction of anisotropy is defined by a unit vector \f$\hat{\bf
 !! n}=(n_1,n_2)\f$.

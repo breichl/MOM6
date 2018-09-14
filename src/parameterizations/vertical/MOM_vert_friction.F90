@@ -29,6 +29,7 @@ public vertvisc, vertvisc_remnant, vertvisc_coef
 public vertvisc_limit_vel, vertvisc_init, vertvisc_end
 public updateCFLtruncationValue
 
+!> The control structure with parameters and memory for the MOM_vert_friction module
 type, public :: vertvisc_CS ; private
   real    :: Hmix            !< The mixed layer thickness in m.
   real    :: Hmix_stress     !< The mixed layer thickness over which the wind
@@ -66,13 +67,10 @@ type, public :: vertvisc_CS ; private
     a_v                !< The v-drag coefficient across an interface, in m s-1.
   real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_,NKMEM_) :: &
     h_v                !< The effective layer thickness at v-points, m or kg m-2.
-  !>@{
-  !! The surface coupling coefficient under ice shelves
-  !! in m s-1. Retained to determine stress under shelves.
-  real, pointer, dimension(:,:) :: &
-    a1_shelf_u => NULL(), &
-    a1_shelf_v => NULL()
-  !>@}
+  real, pointer, dimension(:,:) :: a1_shelf_u => NULL() !< The u-momentum coupling coefficient under
+                           !! ice shelves in m s-1. Retained to determine stress under shelves.
+  real, pointer, dimension(:,:) :: a1_shelf_v => NULL() !< The v-momentum coupling coefficient under
+                           !! ice shelves in m s-1. Retained to determine stress under shelves.
 
   logical :: split          !< If true, use the split time stepping scheme.
   logical :: bottomdraglaw  !< If true, the  bottom stress is calculated with a
@@ -99,28 +97,28 @@ type, public :: vertvisc_CS ; private
                             !! thickness for viscosity.
   logical :: debug          !< If true, write verbose checksums for debugging purposes.
   integer :: nkml           !< The number of layers in the mixed layer.
-  integer, pointer :: ntrunc  !< The number of times the velocity has been
-                              !! truncated since the last call to write_energy.
-  !>@{
-  !! The complete path to files in which a column's worth of
-  !! accelerations are written when velocity truncations occur.
-  character(len=200) :: u_trunc_file
-  character(len=200) :: v_trunc_file
-  !>@}
+  integer, pointer :: ntrunc !< The number of times the velocity has been
+                            !! truncated since the last call to write_energy.
+  character(len=200) :: u_trunc_file  !< The complete path to a file in which a column of
+                            !! u-accelerations are written if velocity truncations occur.
+  character(len=200) :: v_trunc_file !< The complete path to a file in which a column of
+                            !! v-accelerations are written if velocity truncations occur.
+  logical :: StokesMixing   !< If true, do Stokes drift mixing via the Lagrangian current
+                            !! (Eulerian plus Stokes drift).  False by default and set
+                            !! via STOKES_MIXING_COMBINED.
 
   type(diag_ctrl), pointer :: diag !< A structure that is used to regulate the
                                    !! timing of diagnostic output.
 
-  !>@{
-  !! Diagnostic identifiers
+  !>@{ Diagnostic identifiers
   integer :: id_du_dt_visc = -1, id_dv_dt_visc = -1, id_au_vv = -1, id_av_vv = -1
   integer :: id_h_u = -1, id_h_v = -1, id_hML_u = -1 , id_hML_v = -1
   integer :: id_Ray_u = -1, id_Ray_v = -1, id_taux_bot = -1, id_tauy_bot = -1
   integer :: id_Kv_slow = -1, id_Kv_u = -1, id_Kv_v = -1
   !>@}
 
-  type(PointAccel_CS), pointer :: PointAccel_CSp => NULL()
-  logical :: StokesMixing
+  type(PointAccel_CS), pointer :: PointAccel_CSp => NULL() !< A pointer to the control structure
+                              !! for recording accelerations leading to velocity truncations
 end type vertvisc_CS
 
 contains
@@ -219,14 +217,12 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, CS, &
   Idt = 1.0 / dt
 
   !Check if Stokes mixing allowed if requested (present and associated)
+  DoStokesMixing=.false.
   if (CS%StokesMixing) then
-    DoStokesMixing=(present(Waves) .and. associated(Waves))
-    if (.not.DoStokesMixing) then
+    if (present(Waves)) DoStokesMixing = associated(Waves)
+    if (.not. DoStokesMixing) &
       call MOM_error(FATAL,"Stokes Mixing called without allocated"//&
-                    "Waves Control Structure")
-    endif
-  else
-    DoStokesMixing=.false.
+                     "Waves Control Structure")
   endif
 
   do k=1,nz ; do i=Isq,Ieq ; Ray(i,k) = 0.0 ; enddo ; enddo
@@ -234,16 +230,16 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, CS, &
   !   Update the zonal velocity component using a modification of a standard
   ! tridagonal solver.
 
-  ! When mixing down Eulerian current + Stokes drift add before calling solver
-  if (DoStokesMixing) then ; do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq
-    if (G%mask2dCu(I,j) > 0) u(I,j,k) = u(I,j,k) + Waves%Us_x(I,j,k)
-  enddo ; enddo ; enddo ; endif
-
   !$OMP parallel do default(shared) firstprivate(Ray) &
   !$OMP                 private(do_i,surface_stress,zDS,stress,h_a,hfr, &
   !$OMP                         b_denom_1,b1,d1,c1)
   do j=G%jsc,G%jec
     do I=Isq,Ieq ; do_i(I) = (G%mask2dCu(I,j) > 0) ; enddo
+
+    ! When mixing down Eulerian current + Stokes drift add before calling solver
+    if (DoStokesMixing) then ; do k=1,nz ; do I=Isq,Ieq
+      if (do_i(I)) u(I,j,k) = u(I,j,k) + Waves%Us_x(I,j,k)
+    enddo ; enddo ; endif
 
     if (associated(ADp%du_dt_visc)) then ; do k=1,nz ; do I=Isq,Ieq
       ADp%du_dt_visc(I,j,k) = u(I,j,k)
@@ -332,25 +328,26 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, CS, &
         taux_bot(I,j) = taux_bot(I,j) + Rho0 * (Ray(I,k)*u(I,j,k))
       enddo ; enddo ; endif
     endif
+
+    ! When mixing down Eulerian current + Stokes drift subtract after calling solver
+    if (DoStokesMixing) then ; do k=1,nz ; do I=Isq,Ieq
+      if (do_i(I)) u(I,j,k) = u(I,j,k) - Waves%Us_x(I,j,k)
+    enddo ; enddo ; endif
+
   enddo ! end u-component j loop
 
-  ! When mixing down Eulerian current + Stokes drift subtract after calling solver
-  if (DoStokesMixing) then ; do k=1,nz ; do j=G%jsc,G%jec ; do I=Isq,Ieq
-    if (G%mask2dCu(I,j) > 0) u(I,j,k) = u(I,j,k) - Waves%Us_x(I,j,k)
-  enddo ; enddo ; enddo ; endif
-
   ! Now work on the meridional velocity component.
-  ! When mixing down Eulerian current + Stokes drift add before calling solver
-  if (DoStokesMixing) then ; do k=1,nz ; do j=Jsq,Jeq ; do I=Is,Ie
-    if (G%mask2dCv(I,j) > 0) &
-      v(i,j,k) = v(i,j,k) + Waves%Us_y(i,j,k)
-  enddo ; enddo ; enddo ; endif
 
   !$OMP parallel do default(shared) firstprivate(Ray) &
   !$OMP               private(do_i,surface_stress,zDS,stress,h_a,hfr, &
   !$OMP                       b_denom_1,b1,d1,c1)
   do J=Jsq,Jeq
     do i=is,ie ; do_i(i) = (G%mask2dCv(i,J) > 0) ; enddo
+
+    ! When mixing down Eulerian current + Stokes drift add before calling solver
+    if (DoStokesMixing) then ; do k=1,nz ; do i=is,ie
+      if (do_i(i)) v(i,j,k) = v(i,j,k) + Waves%Us_y(i,j,k)
+    enddo ; enddo ; endif
 
     if (associated(ADp%dv_dt_visc)) then ; do k=1,nz ; do i=is,ie
       ADp%dv_dt_visc(i,J,k) = v(i,J,k)
@@ -413,12 +410,13 @@ subroutine vertvisc(u, v, h, forces, visc, dt, OBC, ADp, CDp, G, GV, CS, &
         tauy_bot(i,J) = tauy_bot(i,J) + Rho0 * (Ray(i,k)*v(i,J,k))
       enddo ; enddo ; endif
     endif
-  enddo ! end of v-component J loop
 
-  ! When mixing down Eulerian current + Stokes drift subtract after calling solver
-  if (DoStokesMixing) then ; do k=1,nz ; do J=Jsq,Jeq ; do i=Is,Ie
-    if (G%mask2dCv(i,J) > 0) v(i,J,k) = v(i,J,k) - Waves%Us_y(i,J,k)
-  enddo ; enddo ; enddo ; endif
+    ! When mixing down Eulerian current + Stokes drift subtract after calling solver
+    if (DoStokesMixing) then ; do k=1,nz ; do i=is,ie
+      if (do_i(i)) v(i,J,k) = v(i,J,k) - Waves%Us_y(i,J,k)
+    enddo ; enddo ; endif
+
+  enddo ! end of v-component J loop
 
   call vertvisc_limit_vel(u, v, h, ADp, CDp, forces, visc, dt, G, GV, CS)
 

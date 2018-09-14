@@ -1,3 +1,5 @@
+!> Provides functions for some diabatic processes such as fraxil, brine rejection,
+!! tendency due to surface flux divergence.
 module MOM_diabatic_aux
 
 ! This file is part of MOM6. See LICENSE.md for the license.
@@ -24,12 +26,12 @@ implicit none ; private
 public diabatic_aux_init, diabatic_aux_end
 public make_frazil, adjust_salt, insert_brine, differential_diffuse_T_S, triDiagTS
 public find_uv_at_h, diagnoseMLDbyDensityDifference, applyBoundaryFluxesInOut
+
 !> Control structure for diabatic_aux
 type, public :: diabatic_aux_CS ; private
   logical :: do_rivermix = .false. !< Provide additional TKE to mix river runoff
                                    !! at the river mouths to "rivermix_depth" meters
-  real    :: rivermix_depth = 0.0  !< The depth to which rivers are mixed if
-                                   !! do_rivermix = T, in m.
+  real    :: rivermix_depth = 0.0  !< The depth to which rivers are mixed if do_rivermix = T, in m.
   logical :: reclaim_frazil  !<   If true, try to use any frazil heat deficit to
                              !! to cool the topmost layer down to the freezing
                              !! point.  The default is false.
@@ -51,11 +53,11 @@ type, public :: diabatic_aux_CS ; private
   type(diag_ctrl), pointer :: diag !< Structure used to regulate timing of diagnostic output
 
   ! Diagnostic handles
-  integer :: id_createdH       = -1
-  integer :: id_brine_lay      = -1
-  integer :: id_penSW_diag     = -1 !< Penetrative shortwave heating (flux convergence) diagnostic
-  integer :: id_penSWflux_diag = -1 !< Penetrative shortwave flux diagnostic
-  integer :: id_nonpenSW_diag  = -1 !< Non-penetrative shortwave heating diagnostic
+  integer :: id_createdH       = -1 !< Diagnostic ID of mass added to avoid grounding
+  integer :: id_brine_lay      = -1 !< Diagnostic ID of which layer receives the brine
+  integer :: id_penSW_diag     = -1 !< Diagnostic ID of Penetrative shortwave heating (flux convergence)
+  integer :: id_penSWflux_diag = -1 !< Diagnostic ID of Penetrative shortwave flux
+  integer :: id_nonpenSW_diag  = -1 !< Diagnostic ID of Non-penetrative shortwave heating
 
   ! Optional diagnostic arrays
   real, allocatable, dimension(:,:)   :: createdH       !< The amount of volume added in order to avoid grounding (m/s)
@@ -65,7 +67,9 @@ type, public :: diabatic_aux_CS ; private
 
 end type diabatic_aux_CS
 
+!>@{ CPU time clock IDs
 integer :: id_clock_uv_at_h, id_clock_frazil
+!!@}
 
 contains
 
@@ -487,7 +491,10 @@ end subroutine insert_brine
 subroutine triDiagTS(G, GV, is, ie, js, je, hold, ea, eb, T, S)
   type(ocean_grid_type),                    intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),                  intent(in)    :: GV   !< The ocean's vertical grid structure
-  integer,                                  intent(in)    :: is, ie, js, je !< The range of indices to work on.
+  integer,                                  intent(in)    :: is   !< The start i-index to work on.
+  integer,                                  intent(in)    :: ie   !< The end i-index to work on.
+  integer,                                  intent(in)    :: js   !< The start j-index to work on.
+  integer,                                  intent(in)    :: je   !< The end j-index to work on.
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)), intent(in)    :: hold !< The layer thicknesses before entrainment, in H.
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)), intent(in)    :: ea !< The amount of fluid entrained from the layer
                                                  !! above within this time step, in units of H.
@@ -1403,48 +1410,34 @@ subroutine diabatic_aux_end(CS)
 
 end subroutine diabatic_aux_end
 
-!> \namespace MOM_diabatic_aux
+!> \namespace mom_diabatic_aux
 !!
-!!    This module contains the subroutines that, along with the        *
-!!  subroutines that it calls, implements diapycnal mass and momentum  *
-!!  fluxes and a bulk mixed layer.  The diapycnal diffusion can be     *
-!!  used without the bulk mixed layer.                                 *
-!!                                                                     *
-!!    diabatic first determines the (diffusive) diapycnal mass fluxes  *
-!!  based on the convergence of the buoyancy fluxes within each layer. *
-!!  The dual-stream entrainment scheme of MacDougall and Dewar (JPO,   *
-!!  1997) is used for combined diapycnal advection and diffusion,      *
-!!  calculated implicitly and potentially with the Richardson number   *
-!!  dependent mixing, as described by Hallberg (MWR, 2000). Diapycnal  *
-!!  advection is fundamentally the residual of diapycnal diffusion,    *
-!!  so the fully implicit upwind differencing scheme that is used is   *
-!!  entirely appropriate.  The downward buoyancy flux in each layer    *
-!!  is determined from an implicit calculation based on the previously *
-!!  calculated flux of the layer above and an estimated flux in the    *
-!!  layer below.  This flux is subject to the following conditions:    *
-!!  (1) the flux in the top and bottom layers are set by the boundary  *
-!!  conditions, and (2) no layer may be driven below an Angstrom thick-*
-!!  ness.  If there is a bulk mixed layer, the buffer layer is treat-  *
-!!  ed as a fixed density layer with vanishingly small diffusivity.    *
-!!                                                                     *
-!!    diabatic takes 5 arguments:  the two velocities (u and v), the   *
-!!  thicknesses (h), a structure containing the forcing fields, and    *
-!!  the length of time over which to act (dt).  The velocities and     *
-!!  thickness are taken as inputs and modified within the subroutine.  *
-!!  There is no limit on the time step.                                *
-!!                                                                     *
-!!     A small fragment of the grid is shown below:                    *
-!!                                                                     *
-!!    j+1  x ^ x ^ x   At x:  q                                        *
-!!    j+1  > o > o >   At ^:  v                                        *
-!!    j    x ^ x ^ x   At >:  u                                        *
-!!    j    > o > o >   At o:  h, T, S, buoy, ustar, ea, eb, etc.       *
-!!    j-1  x ^ x ^ x                                                   *
-!!        i-1  i  i+1  At x & ^:                                       *
-!!           i  i+1    At > & o:                                       *
-!!                                                                     *
-!!  The boundaries always run through q grid points (x).               *
-!!                                                                     *
-!!********+*********+*********+*********+*********+*********+*********+**
+!!    This module contains the subroutines that, along with the
+!!  subroutines that it calls, implements diapycnal mass and momentum
+!!  fluxes and a bulk mixed layer.  The diapycnal diffusion can be
+!!  used without the bulk mixed layer.
+!!
+!!    diabatic first determines the (diffusive) diapycnal mass fluxes
+!!  based on the convergence of the buoyancy fluxes within each layer.
+!!  The dual-stream entrainment scheme of MacDougall and Dewar (JPO,
+!!  1997) is used for combined diapycnal advection and diffusion,
+!!  calculated implicitly and potentially with the Richardson number
+!!  dependent mixing, as described by Hallberg (MWR, 2000). Diapycnal
+!!  advection is fundamentally the residual of diapycnal diffusion,
+!!  so the fully implicit upwind differencing scheme that is used is
+!!  entirely appropriate.  The downward buoyancy flux in each layer
+!!  is determined from an implicit calculation based on the previously
+!!  calculated flux of the layer above and an estimated flux in the
+!!  layer below.  This flux is subject to the following conditions:
+!!  (1) the flux in the top and bottom layers are set by the boundary
+!!  conditions, and (2) no layer may be driven below an Angstrom thick-
+!!  ness.  If there is a bulk mixed layer, the buffer layer is treat-
+!!  ed as a fixed density layer with vanishingly small diffusivity.
+!!
+!!    diabatic takes 5 arguments:  the two velocities (u and v), the
+!!  thicknesses (h), a structure containing the forcing fields, and
+!!  the length of time over which to act (dt).  The velocities and
+!!  thickness are taken as inputs and modified within the subroutine.
+!!  There is no limit on the time step.
 
 end module MOM_diabatic_aux

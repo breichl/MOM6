@@ -25,7 +25,7 @@ use MOM_io, only : slasher, fieldtype
 use MOM_io, only : write_field, close_file, SINGLE_FILE, MULTIPLE
 use MOM_restart, only : register_restart_field, query_initialized, save_restart
 use MOM_restart, only : restart_init, restore_state, MOM_restart_CS
-use MOM_time_manager, only : time_type, set_time, time_type_to_real
+use MOM_time_manager, only : time_type, time_type_to_real, time_type_to_real, real_to_time
 use MOM_transcribe_grid, only : copy_dyngrid_to_MOM_grid, copy_MOM_grid_to_dyngrid
 use MOM_variables, only : surface
 use MOM_forcing_type, only : forcing, allocate_forcing_type, MOM_forcing_chksum
@@ -47,7 +47,7 @@ use MOM_coms, only : reproducing_sum, sum_across_PEs
 use MOM_checksums, only : hchksum, qchksum, chksum, uchksum, vchksum, uvchksum
 use time_interp_external_mod, only : init_external_field, time_interp_external
 use time_interp_external_mod, only : time_interp_external_init
-use time_manager_mod, only : print_time, time_type_to_real, real_to_time_type
+use time_manager_mod, only : print_time
 implicit none ; private
 
 #include <MOM_memory.h>
@@ -71,7 +71,7 @@ type, public :: ice_shelf_CS ; private
                                           !! The rest is private
   real ::   flux_factor = 1.0             !< A factor that can be used to turn off ice shelf
                                           !! melting (flux_factor = 0).
-  character(len=128) :: restart_output_dir = ' '
+  character(len=128) :: restart_output_dir = ' ' !< The directory in which to write restart files
   type(ice_shelf_state), pointer :: ISS => NULL() !< A structure with elements that describe
                                           !! the ice-shelf state
   type(ice_shelf_dyn_CS), pointer :: dCS => NULL() !< The control structure for the ice-shelf dynamics.
@@ -119,11 +119,12 @@ type, public :: ice_shelf_CS ; private
                             !! it is to estimate the gravitational driving force at the
                             !! shelf front(until we think of a better way to do it-
                             !! but any difference will be negligible)
-  logical :: calve_to_mask
-  real :: min_thickness_simple_calve ! min. ice shelf thickness criteria for calving
-  real :: T0, S0 ! temp/salt at ocean surface in the restoring region
-  real :: input_flux
-  real :: input_thickness
+  logical :: calve_to_mask  !< If true, calve any ice that passes outside of a masked area
+  real :: min_thickness_simple_calve !< min. ice shelf thickness criteria for calving
+  real :: T0                !< temperature at ocean surface in the restoring region, in degC
+  real :: S0                !< Salinity at ocean surface in the restoring region, in ppt.
+  real :: input_flux        !< Ice volume flux at an upstream open boundary, in m3 s-1.
+  real :: input_thickness   !< Ice thickness at an upstream open boundary, in m.
 
   type(time_type) :: Time                !< The component's time.
   type(EOS_type), pointer :: eqn_of_state => NULL() !< Type that indicates the
@@ -143,15 +144,16 @@ type, public :: ice_shelf_CS ; private
   logical :: constant_sea_level          !< if true, apply an evaporative, heat and salt
                                          !! fluxes. It will avoid large increase in sea level.
   real    :: cutoff_depth                !< depth above which melt is set to zero (>= 0).
-  real    :: lambda1, lambda2, lambda3   !< liquidus coeffs. Needed if find_salt_root = true
-  !>@{
-  ! Diagnostic handles
+  real    :: lambda1                     !< liquidus coeff., Needed if find_salt_root = true
+  real    :: lambda2                     !< liquidus coeff., Needed if find_salt_root = true
+  real    :: lambda3                     !< liquidus coeff., Needed if find_salt_root = true
+  !>@{ Diagnostic handles
   integer :: id_melt = -1, id_exch_vel_s = -1, id_exch_vel_t = -1, &
              id_tfreeze = -1, id_tfl_shelf = -1, &
              id_thermal_driving = -1, id_haline_driving = -1, &
              id_u_ml = -1, id_v_ml = -1, id_sbdry = -1, &
              id_h_shelf = -1, id_h_mask = -1, &
-!             id_surf_elev = -1, id_bathym = -1, &
+             id_surf_elev = -1, id_bathym = -1, &
              id_area_shelf_h = -1, &
              id_ustar_shelf = -1, id_shelf_mass = -1, id_mass_flux = -1
   !>@}
@@ -162,13 +164,15 @@ type, public :: ice_shelf_CS ; private
                           !! the ice shelf mass read from a file
 
   type(diag_ctrl), pointer :: diag => NULL() !< A structure that is used to control diagnostic output.
-  type(user_ice_shelf_CS), pointer :: user_CS => NULL()
+  type(user_ice_shelf_CS), pointer :: user_CS => NULL() !< A pointer to the control structure for
+                                  !! user-supplied modifications to the ice shelf code.
 
   logical :: debug                !< If true, write verbose checksums for debugging purposes
                                   !! and use reproducible sums
 end type ice_shelf_CS
 
-integer :: id_clock_shelf, id_clock_pass !< Clock for group pass calls
+integer :: id_clock_shelf !< CPU Clock for the ice shelf code
+integer :: id_clock_pass !< CPU Clock for group pass calls
 
 contains
 
@@ -975,7 +979,7 @@ subroutine add_shelf_flux(G, CS, state, fluxes)
 
       ! just compute changes in mass after first time step
       if (t0>0.0) then
-        Time0 = real_to_time_type(t0)
+        Time0 = real_to_time(t0)
         last_hmask(:,:) = ISS%hmask(:,:) ; last_area_shelf_h(:,:) = ISS%area_shelf_h(:,:)
         call time_interp_external(CS%id_read_mass, Time0, last_mass_shelf)
         last_h_shelf = last_mass_shelf/CS%density_ice
@@ -1298,11 +1302,9 @@ subroutine initialize_ice_shelf(param_file, ocn_grid, Time, CS, diag, forces, fl
                  "A typical density of ice.", units="kg m-3", default=917.0)
 
     call get_param(param_file, mdl, "INPUT_FLUX_ICE_SHELF", CS%input_flux, &
-                 "volume flux at upstream boundary", &
-                 units="m2 s-1", default=0.)
+                 "volume flux at upstream boundary", units="m2 s-1", default=0.)
     call get_param(param_file, mdl, "INPUT_THICK_ICE_SHELF", CS%input_thickness, &
-                 "flux thickness at upstream boundary", &
-                 units="m", default=1000.)
+                 "flux thickness at upstream boundary", units="m", default=1000.)
   else
     ! This is here because of inconsistent defaults.  I don't know why.  RWH
     call get_param(param_file, mdl, "DENSITY_ICE", CS%density_ice, &

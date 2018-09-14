@@ -19,7 +19,7 @@ use MOM_io, only : close_file, fieldtype, file_exists
 use MOM_io, only : open_file, read_data, read_axis_data, SINGLE_FILE, MULTIPLE
 use MOM_io, only : slasher, vardesc, write_field
 use MOM_string_functions, only : uppercase
-use MOM_time_manager, only : time_type, set_time, get_external_field_size
+use MOM_time_manager, only : time_type, get_external_field_size
 use MOM_time_manager, only : init_external_field, time_interp_external
 use MOM_time_manager, only : get_external_field_axes, get_external_field_missing
 use MOM_variables, only : thermo_var_ptrs
@@ -40,7 +40,7 @@ implicit none ; private
 
 public :: horiz_interp_and_extrap_tracer, myStats
 
-character(len=40)  :: mdl = "MOM_horizontal_regridding" ! This module's name.
+! character(len=40)  :: mdl = "MOM_horizontal_regridding" ! This module's name.
 
 !> Fill grid edges
 interface fill_boundaries
@@ -53,8 +53,6 @@ interface horiz_interp_and_extrap_tracer
    module procedure horiz_interp_and_extrap_tracer_record
    module procedure horiz_interp_and_extrap_tracer_fms_id
 end interface
-
-real, parameter :: epsln=1.e-10
 
 contains
 
