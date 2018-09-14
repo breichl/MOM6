@@ -101,15 +101,15 @@ type, public :: energetic_PBL_CS ; private
   real :: MSTAR_B2           !< Coefficients of expressions for mstar in asymptotic limits.
   real :: C_EK = 0.17        !< MSTAR Coefficient in rotation limit for mstar_mode=2
   real :: MSTAR_COEF = 0.3   !< MSTAR coefficient in rotation/stabilizing balance for mstar_mode=2
-  real :: RH18_cN1           !< MSTAR_N coefficient 1 (outter-most coefficient for fit). 
+  real :: RH18_cN1           !< MSTAR_N coefficient 1 (outter-most coefficient for fit).
                              !! Value of 0.275 in RH18.  Increasing this
                              !! coefficient moves MSTAR up for all values of Hf/ust, but more
                              !! effectively at low values (weakly developed OSBLs).
-  real :: RH18_cN2           !< MSTAR_N coefficient 2 (coefficient outside of exponential decay). 
-                             !! Value of 8.0 in RH18.  Increasing this coefficient moves MSTAR 
-                             !! up for all values of HF/ust, with a much more even effect across 
+  real :: RH18_cN2           !< MSTAR_N coefficient 2 (coefficient outside of exponential decay).
+                             !! Value of 8.0 in RH18.  Increasing this coefficient moves MSTAR
+                             !! up for all values of HF/ust, with a much more even effect across
                              !! a wide range of Hf/ust.
-  real :: RH18_cN3           !< MSTAR_N coefficient 3 (exponential decay coefficient). Value of 
+  real :: RH18_cN3           !< MSTAR_N coefficient 3 (exponential decay coefficient). Value of
                              !! -5.0 in RH18.  Increasing this increases how quickly the value
                              !! of MSTAR decreases as Hf/ust increases.
   real :: RH18_cS1           !< MSTAR_S coefficient for RH18 in stabilizing limit.  Value of 0.2 in RH18.
@@ -1104,7 +1104,7 @@ subroutine energetic_PBL(h_3d, u_3d, v_3d, tv, fluxes, dt, Kd_int, G, GV, CS, &
                 FRAC = max(0.05,1.-htot(i)/MLD_guess)
                 vstar = cs%vstar_scale_fac * (CS%vstar_surf_frac*U_Star + &
                          (CS%wstar_ustar_coef*conv_PErel(i)*I_dtrho)**C1_3)*FRAC
-                
+
               endif
               hbs_here = GV%H_to_m * min(hb_hs(i,K), MixLen_shape(K))
               Mixing_Length_Used(k) = MAX(CS%min_mix_len,((h_tt*hbs_here)*vstar) / &
@@ -2226,7 +2226,7 @@ subroutine energetic_PBL_init(Time, G, GV, param_file, diag, CS)
                  "is negative.  The default is 0, but should probably be ~1.",      &
                  units="nondim", default=0.0)
   call get_param(param_file, mdl, "RH18_CN1", CS%RH18_cN1,&
-                 "MSTAR_N coefficient 1 (outter-most coefficient for fit). \n"//      & 
+                 "MSTAR_N coefficient 1 (outter-most coefficient for fit). \n"//      &
                  " The value of 0.275 is given in RH18.  Increasing this \n"//        &
                  "coefficient moves MSTAR up for all values of Hf/ust, but more \n"// &
                  "effectively at low values (weakly developed OSBLs).",               &
@@ -2238,7 +2238,7 @@ subroutine energetic_PBL_init(Time, G, GV, param_file, diag, CS)
                  "effect across a wide range of Hf/ust than CN1.",                        &
                  units="nondim",default=8.0)
   call get_param(param_file, mdl, "RH18_CN3", CS%RH18_cN3,&
-                 "MSTAR_N coefficient 3 (exponential decay coefficient). \n"//             & 
+                 "MSTAR_N coefficient 3 (exponential decay coefficient). \n"//             &
                  "The value of -5.0 is given in RH18.  Increasing this increases how \n"// &
                  "quickly the value of MSTAR decreases as Hf/ust increases.",              &
                  units="nondim",default=-5.0)
