@@ -605,10 +605,10 @@ subroutine diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, &
     ! The KPP scheme calculates boundary layer diffusivities and non-local transport.
 
     call KPP_compute_BLD(CS%KPP_CSp, G, GV, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
-      fluxes%ustar, CS%KPP_buoy_flux)
+      fluxes%ustar, CS%KPP_buoy_flux, waves=waves)
 
     call KPP_calculate(CS%KPP_CSp, G, GV, h, fluxes%ustar, CS%KPP_buoy_flux, Kd_heat, &
-      Kd_salt, visc%Kv_shear, CS%KPP_NLTheat, CS%KPP_NLTscalar, Waves=Waves)
+      Kd_salt, visc%Kv_shear, CS%KPP_NLTheat, CS%KPP_NLTscalar, waves=waves)
 
     if (associated(Hml)) then
       !$OMP parallel default(shared)
@@ -1523,10 +1523,10 @@ subroutine legacy_diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_en
 !$OMP end parallel
 
     call KPP_compute_BLD(CS%KPP_CSp, G, GV, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
-      fluxes%ustar, CS%KPP_buoy_flux)
+      fluxes%ustar, CS%KPP_buoy_flux, waves=waves)
 
     call KPP_calculate(CS%KPP_CSp, G, GV, h, fluxes%ustar, CS%KPP_buoy_flux, Kd_heat, &
-      Kd_salt, visc%Kv_shear, CS%KPP_NLTheat, CS%KPP_NLTscalar, Waves=Waves)
+      Kd_salt, visc%Kv_shear, CS%KPP_NLTheat, CS%KPP_NLTscalar, waves=waves)
 !$OMP parallel default(none) shared(is,ie,js,je,nz,Kd_salt,Kd_int,visc,CS,G,Kd_heat,Hml)
 
     if (associated(Hml)) then

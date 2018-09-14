@@ -168,7 +168,9 @@ integer, parameter :: TESTPROF = 0, SURFBANDS = 1, &
 ! Options For Test Prof
 Real    :: TP_STKX0, TP_STKY0, TP_WVL
 logical :: WaveAgePeakFreq ! Flag to use W
-real    :: WaveAge, WaveWind
+logical :: DHH85_FixedInTime
+logical :: DHH85_Is_Set=.false.
+real    :: DHH85_WaveAge, DHH85_U10, DHH85_DIR
 real    :: PI
 !!@}
 
@@ -312,9 +314,9 @@ subroutine MOM_wave_interface_init(time,G,GV,param_file, CS, diag )
       call get_param(param_file,mdl,"SURFBAND_STOKES_Y",CS%PrescribedSurfStkY,      &
            "Y-direction surface Stokes drift for bands.",units='m/s', &
            default=0.0)
-   case default! No method provided
-     call MOM_error(FATAL,'Check WAVE_METHOD.')
-   end select
+    case default! No method provided
+      call MOM_error(FATAL,'Check WAVE_METHOD.')
+    end select
 
   case (DHH85_STRING)!Donelan et al., 1985 spectrum
     WaveMethod = DHH85
@@ -323,12 +325,18 @@ subroutine MOM_wave_interface_init(time,G,GV,param_file, CS, diag )
     call get_param(param_file,mdl,"DHH85_AGE_FP",WaveAgePeakFreq,   &
          "Choose true to use waveage in peak frequency.", &
          units='', default=.false.)
-    call get_param(param_file,mdl,"DHH85_AGE",WaveAge,   &
+    call get_param(param_file,mdl,"DHH85_AGE",DHH85_WaveAge,   &
          "Wave Age for DHH85 spectrum.", &
          units='', default=1.2)
-    call get_param(param_file,mdl,"DHH85_WIND",WaveWind,   &
-         "Wind speed for DHH85 spectrum.", &
+    call get_param(param_file,mdl,"DHH85_WIND_SPEED",DHH85_U10,   &
+         "Magnitude of wind for DHH85 spectrum.", &
          units='', default=10.0)
+    call get_param(param_file,mdl,"DHH85_WIND_DIR",DHH85_DIR,   &
+         "Direction of wind for DHH85 spectrum (0 for to-the-east, clockwise).", &
+         units='degrees', default=0.0)
+    call get_param(param_file,mdl,"DHH85_FIXED",DHH85_FixedInTime, &
+         "Logical set to true if DHH85 Stokes drift is fixed in time.", &
+         units='',default=.true.)
   case (LF17_STRING)!Li and Fox-Kemper 17 wind-sea Langmuir number
     WaveMethod = LF17
    case default
@@ -381,7 +389,7 @@ end subroutine MOM_wave_interface_init
 !! with the wind-speed dependent Stokes drift formulation of LF17
 subroutine MOM_wave_interface_init_lite(param_file)
   type(param_file_type), intent(in) :: param_file !< Input parameter structure
-
+  logical isLF17
   ! Langmuir number Options
   call get_param(param_file, mdl, "LA_DEPTH_RATIO", LA_FracHBL,              &
        "The depth (normalized by BLD) to average Stokes drift over in \n"//&
@@ -390,7 +398,15 @@ subroutine MOM_wave_interface_init_lite(param_file)
 
   if (WaveMethod==NULL_WaveMethod) then
     ! Wave not initialized.  Check for WaveMethod.  Only allow LF17.
-    WaveMethod=LF17
+    call get_param(param_file, mdl, "USE_LA_LI2016", ISLF17,      &
+          "A logical to use the Li et al. 2016 (submitted) formula to \n"//&
+          " determine the Langmuir number.",                               &
+          units="nondim", default=.false.,do_not_log=.true.)
+    if (isLF17) then
+      WaveMethod = LF17
+    else
+      WaveMethod = NULL_WaveMethod
+    endif
     PI=4.0*atan(1.0)
   endif
 
@@ -453,7 +469,7 @@ subroutine Update_Stokes_Drift(G,GV,CS,h,ustar)
   ! Local Variables
   real    :: Top, MidPoint, Bottom
   real    :: DecayScale
-  real    :: CMN_FAC, WN, US
+  real    :: CMN_FAC, WN, US, VS
   integer :: ii, jj, kk, b, iim1, jjm1
 
   ! 1. If Test Profile Option is chosen
@@ -582,45 +598,42 @@ subroutine Update_Stokes_Drift(G,GV,CS,h,ustar)
       enddo
     enddo
   elseif (WaveMethod==DHH85) then
-    do II = G%isdB,G%iedB
-      do jj = G%jsd,G%jed
-        bottom = 0.0
-        do kk = 1,G%ke
-          Top = Bottom
-          IIm1 = max(II-1,1)
-          MidPoint = Bottom - GV%H_to_m*(h(II,jj,kk)+h(IIm1,jj,kk))/4.
-          Bottom = Bottom - GV%H_to_m*(h(II,jj,kk)+h(IIm1,jj,kk))/2.
-          !bgr note that this is using a u-point ii on h-point ustar
-          !    this code has only been previous used for uniform
-          !    grid cases.  This needs fixed if DHH85 is used for non
-          !    uniform cases.
-          call DHH85_mid(GV,ustar(ii,jj),Midpoint,US)
-          ! Putting into x-direction (no option for direction
-          CS%US_x(II,jj,kk) = US
+    ! Do not recompute the DHH85 if it is Fixed in time and Set
+    if ((.not.DHH85_FixedInTime) .or. (.not.DHH85_Is_Set)) then
+      ! Compute Stokes drift at U points
+      do jj = G%jsc,G%jec
+        do II = G%iscB,G%iecB
+          bottom = 0.0
+          do kk=1, G%ke
+            Top = Bottom
+            MidPoint = Bottom - 0.25*GV%H_to_m*(h(II,jj,kk)+h(II+1,jj,kk))
+            Bottom = Bottom - 0.5*GV%H_to_m*(h(II,jj,kk)+h(II+1,jj,kk))
+            call DHH85_mid(GV,Midpoint,US,VS)
+            CS%US_x(II,jj,kk) = US
+          enddo
         enddo
       enddo
-    enddo
-    do ii = G%isd,G%ied
-      do JJ = G%jsdB,G%jedB
-        Bottom = 0.0
-        do kk=1, G%ke
-          Top = Bottom
-          JJm1 = max(JJ-1,1)
-          MidPoint = Bottom - GV%H_to_m*(h(ii,JJ,kk)+h(ii,JJm1,kk))/4.
-          Bottom = Bottom - GV%H_to_m*(h(ii,JJ,kk)+h(ii,JJm1,kk))/2.
-          !bgr note that this is using a v-point jj on h-point ustar
-          !    this code has only been previous used for uniform
-          !    grid cases.  This needs fixed if DHH85 is used for non
-          !    uniform cases.
-          ! call DHH85_mid(GV,ustar(ii,JJ),Midpoint,US)
-          ! Putting into x-direction, so setting y direction to 0
-          CS%US_y(ii,JJ,kk) = 0.0 !### Note that =0 should be =US - RWH
-                                  !    bgr - see note above, but this is true
-                                  !          if this is used for anything
-                                  !          other than simple LES comparison
+      ! Compute Stokes drift at V points
+      do JJ = G%jscB,G%jecB
+        do ii = G%isc,G%iec
+          Bottom = 0.0
+          do kk=1, G%ke
+            Top = Bottom
+            MidPoint = Bottom - 0.25*GV%H_to_m*(h(ii,JJ,kk)+h(ii,JJ+1,kk))
+            Bottom = Bottom - 0.5*GV%H_to_m*(h(ii,JJ,kk)+h(ii,JJ+1,kk))
+            call DHH85_mid(GV,Midpoint,US,VS)
+            CS%US_y(ii,JJ,kk) = VS
+          enddo
         enddo
       enddo
-    enddo
+      do kk=1, G%ke
+        ! Disperse into halo on u/v grids
+        call pass_vector(CS%US_x(:,:,kk),CS%US_y(:,:,kk), G%Domain, To_ALL)
+      enddo
+      CS%US0_x(:,:) = CS%US_x(:,:,1)
+      CS%US0_y(:,:) = CS%US_y(:,:,1)
+      DHH85_Is_Set = .true.
+    endif
   else! Keep this else, fallback to 0 Stokes drift
     do kk= 1,G%ke
       do II = G%isdB,G%iedB
@@ -851,6 +864,11 @@ subroutine get_Langmuir_Number( LA, G, GV, HBL, USTAR, i, j, &
   real, dimension(SZK_(G)) :: US_H, VS_H
   real, dimension(NumBands) :: StkBand_X, StkBand_Y
   integer :: KK, BB
+
+  if (WaveMethod == Null_WaveMethod) then
+    LA=1.e8
+    return
+  endif
 
  ! Compute averaging depth for Stokes drift (negative)
   Dpt_LASL = min(-0.1, -LA_FracHBL*HBL)
@@ -1084,20 +1102,17 @@ end subroutine Get_SL_Average_Band
 !! use for comparing MOM6 simulation to his LES
 !! computed at z mid point (I think) and not depth averaged.
 !! Should be fine to integrate in frequency from 0.1 to sqrt(-0.2*grav*2pi/dz
-subroutine DHH85_mid(GV, ust, zpt, US)
+subroutine DHH85_mid(GV, zpt, US, VS)
   type(verticalGrid_type), &
        intent(in)   :: GV    !< Ocean vertical grid
-  real, intent(in)  :: UST   !< Surface friction velocity (m/s)
   real, intent(in)  :: ZPT   !< Depth to get Stokes drift (m)
   real, intent(out) :: US    !< Stokes drift (m/s)
+  real, intent(out) :: VS    !< Stokes drift (y)
   !
   real :: ann, Bnn, Snn, Cnn, Dnn
-  real :: omega_peak, omega, u10, WA, domega
+  real :: omega_peak, omega, domega
   real :: omega_min, omega_max, wavespec, Stokes
   integer :: Nomega, OI
-  !
-  WA = WaveAge
-  u10 = WaveWind
 
   !/
   omega_min = 0.1 ! Hz
@@ -1107,17 +1122,17 @@ subroutine DHH85_mid(GV, ust, zpt, US)
   NOmega = (omega_max-omega_min)/domega
   !
   if (WaveAgePeakFreq) then
-    omega_peak = GV%G_EARTH/WA/u10
+    omega_peak = GV%G_EARTH/DHH85_WaveAge/DHH85_U10
   else
-    omega_peak = 2. * pi * 0.13 * GV%g_earth / U10
+    omega_peak = 2. * pi * 0.13 * GV%g_earth / DHH85_U10
   endif
   !/
-  Ann = 0.006 * WaveAge**(-0.55)
+  Ann = 0.006 * DHH85_WaveAge**(-0.55)
   Bnn = 1.0
-  Snn = 0.08 * (1.0 + 4.0 * WaveAge**3)
+  Snn = 0.08 * (1.0 + 4.0 * DHH85_WaveAge**3)
   Cnn = 1.7
-  if (WA < 1.) then
-    Cnn = Cnn - 6.0*log10(WA)
+  if (DHH85_WaveAge < 1.) then
+    Cnn = Cnn - 6.0*log10(DHH85_WaveAge)
   endif
   !/
   US = 0.0
@@ -1133,6 +1148,9 @@ subroutine DHH85_mid(GV, ust, zpt, US)
     US=US+Stokes*domega
     omega = omega + domega
   enddo
+  !Rotate into wind direction
+  VS = US * sin(DHH85_DIR*pi/180.)
+  US = US * cos(DHH85_DIR*pi/180.)
 
   return
 end subroutine DHH85_mid
