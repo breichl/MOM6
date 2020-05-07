@@ -1697,7 +1697,7 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
   !   MOM_error to use, but do so at your own risk and with these points in mind.
   !}
   if (CS%StokesMixing) then
-    call MOM_error(FATAL, "Stokes mixing requires user intervention in the code.\n"//&
+    call MOM_error(WARNING, "Stokes mixing requires user intervention in the code.\n"//&
                           "  Model now exiting.  See MOM_vert_friction.F90 for \n"//&
                           "  details (search 'BGR 04/04/2018' to locate comment).")
   endif

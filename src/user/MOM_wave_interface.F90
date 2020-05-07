@@ -253,7 +253,7 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
        Default=.false.)
   if (CS%CoriolisStokes) then
     ! Force Code Intervention
-    call MOM_error(FATAL,"Should you be enabling Coriolis-Stokes? Code not ready.")
+    call MOM_error(WARNING,"Should you be enabling Coriolis-Stokes? Code not ready.")
   endif
 
   ! Get Wave Method and write to integer WaveMethod
