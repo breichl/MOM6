@@ -23,8 +23,9 @@ subroutine find_obsolete_params(param_file)
   character(len=40)  :: mdl = "find_obsolete_params" ! This module's name.
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
-  integer :: test_int
+  integer :: test_int, l_seg, nseg
   logical :: test_logic, test_logic2, test_logic3, split
+  character(len=40)  :: temp_string
 
   if (.not.is_root_pe()) return
 
@@ -33,6 +34,8 @@ subroutine find_obsolete_params(param_file)
 
   call obsolete_logical(param_file, "JACOBIAN_PGF", .false., &
        hint="Instead use ANALYTIC_FV_PGF.")
+  call obsolete_logical(param_file, "BLOCKED_ANALYTIC_FV_PGF", &
+       hint="BLOCKED_ANALYTIC_FV_PGF is no longer available.")
 
   call obsolete_logical(param_file, "SADOURNY", &
        hint="Instead use CORIOLIS_SCHEME='SADOURNY'.")
@@ -45,6 +48,9 @@ subroutine find_obsolete_params(param_file)
 
   call obsolete_logical(param_file, "BT_CONT_BT_THICK", &
        hint="Instead use BT_THICK_SCHEME='FROM_BT_CONT'.")
+
+  call obsolete_logical(param_file, "ADD_KV_SLOW", &
+       hint="This option is no longer needed, nor supported.")
 
   call obsolete_logical(param_file, "APPLY_OBC_U", &
        hint="Instead use OBC_NUMBER_SEGMENTS>0 and use the new segments protocol.")
@@ -66,6 +72,18 @@ subroutine find_obsolete_params(param_file)
        hint="Instead use OBC_SEGMENT_XXX_DATA.")
   call obsolete_char(param_file, "READ_OBC_TS", &
        hint="Instead use OBC_SEGMENT_XXX_DATA.")
+  call obsolete_char(param_file, "EXTEND_OBC_SEGMENTS", &
+       hint="This option is no longer needed, nor supported.")
+  call obsolete_char(param_file, "MEKE_VISCOSITY_COEFF", &
+       hint="This option has been replaced by MEKE_VISCOSITY_COEFF_KU and \n" //&
+            " MEKE_VISCOSITY_COEFF_AU. Please set these parameters instead.")
+  nseg = 0
+  call read_param(param_file, "OBC_NUMBER_OF_SEGMENTS", nseg)
+  do l_seg = 1,nseg
+    write(temp_string(1:22),"('OBC_SEGMENT_',i3.3,'_TNUDGE')") l_seg
+    call obsolete_real(param_file, temp_string, &
+         hint="Instead use OBC_SEGMENT_xxx_VELOCITY_NUDGING_TIMESCALES.")
+  enddo
 
   test_logic3 = .true. ; call read_param(param_file,"ENABLE_THERMODYNAMICS",test_logic3)
   test_logic = .true. ; call read_param(param_file,"TEMPERATURE",test_logic)
@@ -149,6 +167,9 @@ subroutine find_obsolete_params(param_file)
   call obsolete_real(param_file, "RINO_CRIT_EQ")
   call obsolete_real(param_file, "SHEARMIX_RATE_EQ")
 
+  call obsolete_real(param_file, "VSTAR_SCALE_FACTOR", hint="Use EPBL_VEL_SCALE_FACTOR instead.")
+  call obsolete_logical(param_file, "ORIG_MLD_ITERATION", .false.)
+
   call obsolete_logical(param_file, "CONTINUITY_PPM", .true.)
 
   call obsolete_logical(param_file, "USE_LOCAL_PREF", .true.)
@@ -185,10 +206,15 @@ subroutine find_obsolete_params(param_file)
   call obsolete_logical(param_file, "READJUST_BT_TRANS", .false.)
   call obsolete_logical(param_file, "RESCALE_BT_FACE_AREAS", .false.)
   call obsolete_logical(param_file, "APPLY_BT_DRAG", .true.)
+  call obsolete_real(param_file, "BT_MASS_SOURCE_LIMIT", 0.0)
 
   call obsolete_int(param_file, "SEAMOUNT_LENGTH_SCALE", hint="Use SEAMOUNT_X_LENGTH_SCALE instead.")
 
   call obsolete_logical(param_file, "MSTAR_FIXED", hint="Instead use MSTAR_MODE.")
+  call obsolete_logical(param_file, "USE_VISBECK_SLOPE_BUG", .false.)
+
+  call obsolete_real(param_file, "MIN_Z_DIAG_INTERVAL")
+  call obsolete_char(param_file, "Z_OUTPUT_GRID_FILE")
 
   ! Write the file version number to the model log.
   call log_version(param_file, mdl, version)

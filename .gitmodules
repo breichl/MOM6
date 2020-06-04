@@ -7,3 +7,9 @@
 [submodule "pkg/GOTM"]
 	path = pkg/GOTM
 	url = https://github.com/gotm-model/code.git
+[submodule "pkg/MOM6_DA_hooks"]
+	path = pkg/MOM6_DA_hooks
+	url = https://github.com/MJHarrison-GFDL/MOM6_DA_hooks.git
+[submodule "pkg/geoKdTree"]
+	path = pkg/geoKdTree
+	url = https://github.com/travissluka/geoKdTree.git

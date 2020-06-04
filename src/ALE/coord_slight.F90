@@ -12,53 +12,52 @@ use regrid_interp,     only : NR_ITERATIONS, NR_TOLERANCE, DEGREE_MAX
 implicit none ; private
 
 !> Control structure containing required parameters for the SLight coordinate
-type, public :: slight_CS
-  private
+type, public :: slight_CS ; private
 
   !> Number of layers/levels
   integer :: nk
 
-  !> Minimum thickness allowed when building the new grid through regridding
+  !> Minimum thickness allowed when building the new grid through regridding [H ~> m or kg m-2]
   real :: min_thickness
 
-  !> Reference pressure for potential density calculations (Pa)
+  !> Reference pressure for potential density calculations [R L2 T-2 ~> Pa]
   real :: ref_pressure
 
   !> Fraction (between 0 and 1) of compressibility to add to potential density
-  !! profiles when interpolating for target grid positions. (nondim)
-  real :: compressibility_fraction = 0.
+  !! profiles when interpolating for target grid positions. [nondim]
+  real :: compressibility_fraction
 
   ! The following 4 parameters were introduced for use with the SLight coordinate:
-  !> Depth over which to average to determine the mixed layer potential density (m)
-  real :: Rho_ML_avg_depth = 1.0
+  !> Depth over which to average to determine the mixed layer potential density [H ~> m or kg m-2]
+  real :: Rho_ML_avg_depth
 
-  !> Number of layers to offset the mixed layer density to find resolved stratification (nondim)
-  real :: nlay_ml_offset = 2.0
+  !> Number of layers to offset the mixed layer density to find resolved stratification [nondim]
+  real :: nlay_ml_offset
 
-  !> The number of fixed-thickess layers at the top of the model
+  !> The number of fixed-thickness layers at the top of the model
   integer :: nz_fixed_surface = 2
 
-  !> The fixed resolution in the topmost SLight_nkml_min layers (m)
-  real :: dz_ml_min = 1.0
+  !> The fixed resolution in the topmost SLight_nkml_min layers [H ~> m or kg m-2]
+  real :: dz_ml_min
 
   !> If true, detect regions with much weaker stratification in the coordinate
   !! than based on in-situ density, and use a stretched coordinate there.
   logical :: fix_haloclines = .false.
 
   !> A length scale over which to filter T & S when looking for spuriously
-  !! unstable water mass profiles, in m.
-  real :: halocline_filter_length = 2.0
+  !! unstable water mass profiles [H ~> m or kg m-2].
+  real :: halocline_filter_length
 
-  !> A value of the stratification ratio that defines a problematic halocline region.
-  real :: halocline_strat_tol = 0.25
+  !> A value of the stratification ratio that defines a problematic halocline region [nondim].
+  real :: halocline_strat_tol
 
-  !> Nominal density of interfaces
+  !> Nominal density of interfaces [R ~> kg m-3].
   real, allocatable, dimension(:) :: target_density
 
-  !> Maximum depths of interfaces
+  !> Maximum depths of interfaces [H ~> m or kg m-2].
   real, allocatable, dimension(:) :: max_interface_depths
 
-  !> Maximum thicknesses of layers
+  !> Maximum thicknesses of layers [H ~> m or kg m-2].
   real, allocatable, dimension(:) :: max_layer_thickness
 
   !> Interpolation control structure
@@ -70,25 +69,40 @@ public init_coord_slight, set_slight_params, build_slight_column, end_coord_slig
 contains
 
 !> Initialise a slight_CS with pointers to parameters
-subroutine init_coord_slight(CS, nk, ref_pressure, target_density, interp_CS)
+subroutine init_coord_slight(CS, nk, ref_pressure, target_density, interp_CS, m_to_H)
   type(slight_CS),      pointer    :: CS !< Unassociated pointer to hold the control structure
-  integer,              intent(in) :: nk
-  real,                 intent(in) :: ref_pressure
-  real, dimension(:),   intent(in) :: target_density
-  type(interp_CS_type), intent(in) :: interp_CS
+  integer,              intent(in) :: nk !< Number of layers in the grid
+  real,                 intent(in) :: ref_pressure !< Coordinate reference pressure [R L2 T-2 ~> Pa]
+  real, dimension(:),   intent(in) :: target_density !< Nominal density of interfaces [R ~> kg m-3]
+  type(interp_CS_type), intent(in) :: interp_CS !< Controls for interpolation
+  real,       optional, intent(in) :: m_to_H !< A conversion factor from m to the units of thicknesses
+
+  real :: m_to_H_rescale  ! A unit conversion factor.
 
   if (associated(CS)) call MOM_error(FATAL, "init_coord_slight: CS already associated!")
   allocate(CS)
   allocate(CS%target_density(nk+1))
 
+  m_to_H_rescale = 1.0 ; if (present(m_to_H)) m_to_H_rescale = m_to_H
+
   CS%nk                = nk
   CS%ref_pressure      = ref_pressure
   CS%target_density(:) = target_density(:)
   CS%interp_CS         = interp_CS
+
+  ! Set real parameter default values
+  CS%compressibility_fraction = 0. ! Nondim.
+  CS%Rho_ML_avg_depth = 1.0 * m_to_H_rescale
+  CS%nlay_ml_offset = 2.0          ! Nondim.
+  CS%dz_ml_min = 1.0 * m_to_H_rescale
+  CS%halocline_filter_length = 2.0 * m_to_H_rescale
+  CS%halocline_strat_tol = 0.25    ! Nondim.
+
 end subroutine init_coord_slight
 
+!> This subroutine deallocates memory in the control structure for the coord_slight module
 subroutine end_coord_slight(CS)
-  type(slight_CS), pointer :: CS
+  type(slight_CS), pointer :: CS !< Coordinate control structure
 
   ! nothing to do
   if (.not. associated(CS)) return
@@ -96,23 +110,37 @@ subroutine end_coord_slight(CS)
   deallocate(CS)
 end subroutine end_coord_slight
 
+!> This subroutine can be used to set the parameters for the coord_slight module
 subroutine set_slight_params(CS, max_interface_depths, max_layer_thickness, &
-     min_thickness, compressibility_fraction, &
-     dz_ml_min, nz_fixed_surface, Rho_ML_avg_depth, nlay_ML_offset, fix_haloclines, &
-     halocline_filter_length, halocline_strat_tol, interp_CS)
-  type(slight_CS),                 pointer    :: CS
-  real,    optional, dimension(:), intent(in) :: max_interface_depths
-  real,    optional, dimension(:), intent(in) :: max_layer_thickness
-  real,    optional,               intent(in) :: min_thickness
-  real,    optional,               intent(in) :: compressibility_fraction
-  real,    optional,               intent(in) :: dz_ml_min
-  integer, optional,               intent(in) :: nz_fixed_surface
-  real,    optional,               intent(in) :: Rho_ML_avg_depth
-  real,    optional,               intent(in) :: nlay_ML_offset
-  logical, optional,               intent(in) :: fix_haloclines
-  real,    optional,               intent(in) :: halocline_filter_length
-  real,    optional,               intent(in) :: halocline_strat_tol
-  type(interp_CS_type), optional,  intent(in) :: interp_CS
+               min_thickness, compressibility_fraction, dz_ml_min, &
+               nz_fixed_surface, Rho_ML_avg_depth, nlay_ML_offset, fix_haloclines, &
+               halocline_filter_length, halocline_strat_tol, interp_CS)
+  type(slight_CS),   pointer    :: CS !< Coordinate control structure
+  real, dimension(:), &
+           optional, intent(in) :: max_interface_depths !< Maximum depths of interfaces [H ~> m or kg m-2]
+  real, dimension(:), &
+           optional, intent(in) :: max_layer_thickness  !< Maximum thicknesses of layers [H ~> m or kg m-2]
+  real,    optional, intent(in) :: min_thickness    !< Minimum thickness allowed when building the
+                                      !! new grid through regridding [H ~> m or kg m-2]
+  real,    optional, intent(in) :: compressibility_fraction !< Fraction (between 0 and 1) of
+                                      !! compressibility to add to potential density profiles when
+                                      !! interpolating for target grid positions. [nondim]
+  real,    optional, intent(in) :: dz_ml_min        !< The fixed resolution in the topmost
+                                      !! SLight_nkml_min layers [H ~> m or kg m-2]
+  integer, optional, intent(in) :: nz_fixed_surface !< The number of fixed-thickness layers at the
+                                      !! top of the model
+  real,    optional, intent(in) :: Rho_ML_avg_depth !< Depth over which to average to determine
+                                      !! the mixed layer potential density [H ~> m or kg m-2]
+  real,    optional, intent(in) :: nlay_ML_offset   !< Number of layers to offset the mixed layer
+                                      !! density to find resolved stratification [nondim]
+  logical, optional, intent(in) :: fix_haloclines   !< If true, detect regions with much weaker than
+                                      !! based on in-situ density, and use a stretched coordinate there.
+  real,    optional, intent(in) :: halocline_filter_length !< A length scale over which to filter T & S
+                                      !! when looking for spuriously unstable water mass profiles [H ~> m or kg m-2].
+  real,    optional, intent(in) :: halocline_strat_tol !< A value of the stratification ratio that
+                                      !! defines a problematic halocline region [nondim].
+  type(interp_CS_type), &
+           optional, intent(in) :: interp_CS !< Controls for interpolation
 
   if (.not. associated(CS)) call MOM_error(FATAL, "set_slight_params: CS not associated")
 
@@ -149,47 +177,62 @@ subroutine set_slight_params(CS, max_interface_depths, max_layer_thickness, &
 end subroutine set_slight_params
 
 !> Build a SLight coordinate column
-subroutine build_slight_column(CS, eqn_of_state, H_to_Pa, m_to_H, H_subroundoff, &
-                                nz, depth, h_col, T_col, S_col, p_col, z_col, z_col_new)
-  type(slight_CS),       intent(in)    :: CS !< Coordinate control structure
+subroutine build_slight_column(CS, eqn_of_state, H_to_pres, H_subroundoff, &
+                               nz, depth, h_col, T_col, S_col, p_col, z_col, z_col_new, &
+                               h_neglect, h_neglect_edge)
+  type(slight_CS),       intent(in)    :: CS    !< Coordinate control structure
   type(EOS_type),        pointer       :: eqn_of_state !< Equation of state structure
-  real,                  intent(in)    :: H_to_Pa !< GV%H_to_Pa
-  real,                  intent(in)    :: m_to_H  !< GV%m_to_H
+  real,                  intent(in)    :: H_to_pres !< A conversion factor from thicknesses to
+                                                !! scaled pressure [R L2 T-2 H-1 ~> Pa m-1 or Pa m2 kg-1]
   real,                  intent(in)    :: H_subroundoff !< GV%H_subroundoff
-  integer,               intent(in)    :: nz !< Number of levels
-  real,                  intent(in)    :: depth !< Depth of ocean bottom (positive in m)
-  real, dimension(nz),   intent(in)    :: T_col, S_col !< T and S for column
-  real, dimension(nz),   intent(in)    :: h_col !< Layer thicknesses, in m
-  real, dimension(nz),   intent(in)    :: p_col !< Layer quantities
-  real, dimension(nz+1), intent(in)    :: z_col !< Interface positions relative to the surface in H units (m or kg m-2)
-  real, dimension(nz+1), intent(inout) :: z_col_new !< Absolute positions of interfaces
-
+  integer,               intent(in)    :: nz    !< Number of levels
+  real,                  intent(in)    :: depth !< Depth of ocean bottom (positive [H ~> m or kg m-2])
+  real, dimension(nz),   intent(in)    :: T_col !< T for column
+  real, dimension(nz),   intent(in)    :: S_col !< S for column
+  real, dimension(nz),   intent(in)    :: h_col !< Layer thicknesses [H ~> m or kg m-2]
+  real, dimension(nz),   intent(in)    :: p_col !< Layer center pressure [R L2 T-2 ~> Pa]
+  real, dimension(nz+1), intent(in)    :: z_col !< Interface positions relative to the surface [H ~> m or kg m-2]
+  real, dimension(nz+1), intent(inout) :: z_col_new !< Absolute positions of interfaces [H ~> m or kg m-2]
+  real,        optional, intent(in)    :: h_neglect !< A negligibly small width for the purpose of
+                                                !! cell reconstructions [H ~> m or kg m-2].
+  real,        optional, intent(in)    :: h_neglect_edge !< A negligibly small width for the purpose
+                                                !! of edge value calculations [H ~> m or kg m-2].
   ! Local variables
-  real, dimension(nz) :: rho_col ! Layer quantities
-  real, dimension(nz) :: T_f, S_f  ! Filtered ayer quantities
+  real, dimension(nz) :: rho_col        ! Layer densities [R ~> kg m-3]
+  real, dimension(nz) :: T_f, S_f       ! Filtered layer temperature [degC] and salinity [ppt]
   logical, dimension(nz+1) :: reliable  ! If true, this interface is in a reliable position.
-  real, dimension(nz+1) :: T_int, S_int ! Temperature and salinity interpolated to interfaces.
-  real, dimension(nz+1) :: rho_tmp, drho_dp, p_IS, p_R
-  real, dimension(nz+1) :: drhoIS_dT, drhoIS_dS
-  real, dimension(nz+1) :: drhoR_dT, drhoR_dS
+  real, dimension(nz+1) :: T_int, S_int ! Temperature [degC] and salinity [ppt] interpolated to interfaces.
+  real, dimension(nz+1) :: rho_tmp      ! A temporary density [R ~> kg m-3]
+  real, dimension(nz+1) :: drho_dp      ! The partial derivative of density with pressure [T2 L-2 ~> kg m-3 Pa-1]
+  real, dimension(nz+1) :: p_IS, p_R    ! Pressures [R L2 T-2 ~> Pa]
+  real, dimension(nz+1) :: drhoIS_dT    ! The partial derivative of in situ density with temperature
+                                        ! in [R degC-1 ~> kg m-3 degC-1]
+  real, dimension(nz+1) :: drhoIS_dS    ! The partial derivative of in situ density with salinity
+                                        ! in [R ppt-1 ~> kg m-3 ppt-1]
+  real, dimension(nz+1) :: drhoR_dT     ! The partial derivative of reference density with temperature
+                                        ! in [R degC-1 ~> kg m-3 degC-1]
+  real, dimension(nz+1) :: drhoR_dS     ! The partial derivative of reference density with salinity
+                                        ! in [R ppt-1 ~> kg m-3 ppt-1]
   real, dimension(nz+1) :: strat_rat
-  real :: H_to_cPa
-  real :: drIS, drR, Fn_now, I_HStol, Fn_zero_val
-  real :: z_int_unst
-  real :: dz      ! A uniform layer thickness in very shallow water, in H.
-  real :: dz_ur   ! The total thickness of an unstable region, in H.
-  real :: wgt, cowgt  ! A weight and its complement, nondim.
-  real :: rho_ml_av ! The average potential density in a near-surface region, in kg m-3.
-  real :: H_ml_av ! A thickness to try to use in taking the near-surface average, in H.
-  real :: rho_x_z ! A cumulative integral of a density, in kg m-3 H.
-  real :: z_wt    ! The thickness actually used in taking the near-surface average, in H.
-  real :: k_interior  ! The (real) value of k where the interior grid starts.
-  real :: k_int2      ! The (real) value of k where the interior grid starts.
-  real :: z_interior  ! The depth where the interior grid starts, in H.
-  real :: z_ml_fix    ! The depth at which the fixed-thickness near-surface layers end, in H.
+  real :: H_to_cPa    ! A conversion factor from thicknesses to the compressibility fraction times
+                      ! the units of pressure [R L2 T-2 H-1 ~> Pa m-1 or Pa m2 kg-1]
+  real :: drIS, drR   ! In situ and reference density differences [R ~> kg m-3]
+  real :: Fn_now, I_HStol, Fn_zero_val ! Nondimensional variables [nondim]
+  real :: z_int_unst  ! The depth where the stratification allows the interior grid to start [H ~> m or kg m-2]
+  real :: dz          ! A uniform layer thickness in very shallow water [H ~> m or kg m-2].
+  real :: dz_ur       ! The total thickness of an unstable region [H ~> m or kg m-2].
+  real :: wgt, cowgt  ! A weight and its complement [nondim].
+  real :: rho_ml_av   ! The average potential density in a near-surface region [R ~> kg m-3].
+  real :: H_ml_av     ! A thickness to try to use in taking the near-surface average [H ~> m or kg m-2].
+  real :: rho_x_z     ! A cumulative integral of a density [R H ~> kg m-2 or kg2 m-5].
+  real :: z_wt        ! The thickness actually used in taking the near-surface average [H ~> m or kg m-2].
+  real :: k_interior  ! The (real) value of k where the interior grid starts [nondim].
+  real :: k_int2      ! The (real) value of k where the interior grid starts [nondim].
+  real :: z_interior  ! The depth where the interior grid starts [H ~> m or kg m-2].
+  real :: z_ml_fix    ! The depth at which the fixed-thickness near-surface layers end [H ~> m or kg m-2].
   real :: dz_dk       ! The thickness of layers between the fixed-thickness
-                      ! near-surface layars and the interior, in H.
-  real :: Lfilt       ! A filtering lengthscale, in H.
+                      ! near-surface layars and the interior [H ~> m or kg m-2].
+  real :: Lfilt       ! A filtering lengthscale [H ~> m or kg m-2].
   logical :: maximum_depths_set ! If true, the maximum depths of interface have been set.
   logical :: maximum_h_set      ! If true, the maximum layer thicknesses have been set.
   real :: k2_used, k2here, dz_sum, z_max
@@ -208,13 +251,13 @@ subroutine build_slight_column(CS, eqn_of_state, H_to_Pa, m_to_H, H_subroundoff,
     dz = (z_col(nz+1) - z_col(1)) / real(nz)
     do K=2,nz ; z_col_new(K) = z_col(1) + dz*real(K-1) ; enddo
   else
-    call calculate_density(T_col, S_col, p_col, rho_col, 1, nz, &
-                           eqn_of_state)
+    call calculate_density(T_col, S_col, p_col, rho_col, eqn_of_state)
 
     ! Find the locations of the target potential densities, flagging
     ! locations in apparently unstable regions as not reliable.
     call rho_interfaces_col(rho_col, h_col, z_col, CS%target_density, nz, &
-                            z_col_new, CS, reliable, debug=.true.)
+                            z_col_new, CS, reliable, debug=.true., &
+                            h_neglect=h_neglect, h_neglect_edge=h_neglect_edge)
 
     ! Ensure that the interfaces are at least CS%min_thickness apart.
     if (CS%min_thickness > 0.0) then
@@ -260,7 +303,7 @@ subroutine build_slight_column(CS, eqn_of_state, H_to_Pa, m_to_H, H_subroundoff,
     ! Determine which interfaces are in the s-space region and the depth extent
     ! of this region.
     z_wt = 0.0 ; rho_x_z = 0.0
-    H_ml_av = m_to_H*CS%Rho_ml_avg_depth
+    H_ml_av = CS%Rho_ml_avg_depth
     do k=1,nz
       if (z_wt + h_col(k) >= H_ml_av) then
         rho_x_z = rho_x_z + rho_col(k) * (H_ml_av - z_wt)
@@ -301,7 +344,7 @@ subroutine build_slight_column(CS, eqn_of_state, H_to_Pa, m_to_H, H_subroundoff,
   !       ! z_int_unst and k_interior.
 
       if (CS%halocline_filter_length > 0.0) then
-        Lfilt = CS%halocline_filter_length*m_to_H
+        Lfilt = CS%halocline_filter_length
 
         ! Filter the temperature and salnity with a fixed lengthscale.
         h_tr = h_col(1) + H_subroundoff
@@ -324,23 +367,22 @@ subroutine build_slight_column(CS, eqn_of_state, H_to_Pa, m_to_H, H_subroundoff,
       T_int(1) = T_f(1) ; S_int(1) = S_f(1)
       do K=2,nz
         T_int(K) = 0.5*(T_f(k-1) + T_f(k)) ; S_int(K) = 0.5*(S_f(k-1) + S_f(k))
-        p_IS(K) = z_col(K) * H_to_Pa
+        p_IS(K) = z_col(K) * H_to_pres
         p_R(K) = CS%ref_pressure + CS%compressibility_fraction * ( p_IS(K) - CS%ref_pressure )
       enddo
       T_int(nz+1) = T_f(nz) ; S_int(nz+1) = S_f(nz)
-      p_IS(nz+1) = z_col(nz+1) * H_to_Pa
-      call calculate_density_derivs(T_int, S_int, p_IS, drhoIS_dT, drhoIS_dS, 2, nz-1, &
-                                    eqn_of_state)
-      call calculate_density_derivs(T_int, S_int, p_R, drhoR_dT, drhoR_dS, 2, nz-1, &
-                                    eqn_of_state)
+      p_IS(nz+1) = z_col(nz+1) * H_to_pres
+      call calculate_density_derivs(T_int, S_int, p_IS, drhoIS_dT, drhoIS_dS, &
+                                    eqn_of_state, (/2,nz/) )
+      call calculate_density_derivs(T_int, S_int, p_R, drhoR_dT, drhoR_dS, &
+                                    eqn_of_state, (/2,nz/) )
       if (CS%compressibility_fraction > 0.0) then
-        call calculate_compress(T_int, S_int, p_R, rho_tmp, drho_dp, 2, nz-1, &
-                                      eqn_of_state)
+        call calculate_compress(T_int, S_int, p_R(:), rho_tmp, drho_dp, 2, nz-1, eqn_of_state)
       else
         do K=2,nz ; drho_dp(K) = 0.0 ; enddo
       endif
 
-      H_to_cPa = CS%compressibility_fraction*H_to_Pa
+      H_to_cPa = CS%compressibility_fraction * H_to_pres
       strat_rat(1) = 1.0
       do K=2,nz
         drIS = drhoIS_dT(K) * (T_f(k) - T_f(k-1)) + &
@@ -429,7 +471,7 @@ subroutine build_slight_column(CS, eqn_of_state, H_to_Pa, m_to_H, H_subroundoff,
       ! The loop bounds are 2 & nz so the top and bottom interfaces do not move.
       ! Recall that z_col_new is positive downward.
       z_col_new(K) = min(z_col_new(K), CS%max_interface_depths(K), &
-                            z_col_new(K-1) + CS%max_layer_thickness(k-1))
+                         z_col_new(K-1) + CS%max_layer_thickness(k-1))
     enddo ; elseif (maximum_depths_set) then ; do K=2,nz
       z_col_new(K) = min(z_col_new(K), CS%max_interface_depths(K))
     enddo ; elseif (maximum_h_set) then ; do k=2,nz
@@ -443,34 +485,40 @@ end subroutine build_slight_column
 !> Finds the new interface locations in a column of water that match the
 !! prescribed target densities.
 subroutine rho_interfaces_col(rho_col, h_col, z_col, rho_tgt, nz, z_col_new, &
-                              CS, reliable, debug)
+                              CS, reliable, debug, h_neglect, h_neglect_edge)
   integer,               intent(in)    :: nz      !< Number of layers
-  real, dimension(nz),   intent(in)    :: rho_col !< Initial layer reference densities.
-  real, dimension(nz),   intent(in)    :: h_col   !< Initial layer thicknesses.
-  real, dimension(nz+1), intent(in)    :: z_col   !< Initial interface heights.
+  real, dimension(nz),   intent(in)    :: rho_col !< Initial layer reference densities [R ~> kg m-3].
+  real, dimension(nz),   intent(in)    :: h_col   !< Initial layer thicknesses [H ~> m or kg m-2].
+  real, dimension(nz+1), intent(in)    :: z_col   !< Initial interface heights [H ~> m or kg m-2].
   real, dimension(nz+1), intent(in)    :: rho_tgt !< Interface target densities.
-  real, dimension(nz+1), intent(inout) :: z_col_new !< New interface heights.
+  real, dimension(nz+1), intent(inout) :: z_col_new !< New interface heights [H ~> m or kg m-2].
   type(slight_CS),       intent(in)    :: CS      !< Coordinate control structure
   logical, dimension(nz+1), intent(inout) :: reliable !< If true, the interface positions
                                                   !! are well defined from a stable region.
-  logical, optional,     intent(in) :: debug      !< If present and true, do debugging checks.
+  logical,     optional, intent(in)    :: debug   !< If present and true, do debugging checks.
+  real,        optional, intent(in)    :: h_neglect !< A negligibly small width for the purpose of
+                                                  !! cell reconstructions [H ~> m or kg m-2]
+  real,        optional, intent(in)    :: h_neglect_edge !< A negligibly small width for the purpose
+                                                  !! of edge value calculations [H ~> m or kg m-2]
 
   real, dimension(nz+1) :: ru_max_int ! The maximum and minimum densities in
-  real, dimension(nz+1) :: ru_min_int ! an unstable region around an interface.
+  real, dimension(nz+1) :: ru_min_int ! an unstable region around an interface [R ~> kg m-3].
   real, dimension(nz)   :: ru_max_lay ! The maximum and minimum densities in
-  real, dimension(nz)   :: ru_min_lay ! an unstable region containing a layer.
-  real, dimension(nz,2) :: ppoly_i_E ! Edge value of polynomial
-  real, dimension(nz,2) :: ppoly_i_S ! Edge slope of polynomial
-  real, dimension(nz,DEGREE_MAX+1) :: ppoly_i_coefficients ! Coefficients of polynomial
+  real, dimension(nz)   :: ru_min_lay ! an unstable region containing a layer [R ~> kg m-3].
+  real, dimension(nz,2) :: ppoly_i_E  ! Edge value of polynomial [R ~> kg m-3]
+  real, dimension(nz,2) :: ppoly_i_S  ! Edge slope of polynomial [R H-1 ~> kg m-4 or m-1]
+  real, dimension(nz,DEGREE_MAX+1) :: ppoly_i_coefficients ! Coefficients of polynomial [R ~> kg m-3]
   logical, dimension(nz)   :: unstable_lay ! If true, this layer is in an unstable region.
   logical, dimension(nz+1) :: unstable_int ! If true, this interface is in an unstable region.
-  real :: rt  ! The current target density, in kg m-3.
-  real :: zf  ! The fractional z-position within a layer of the target density.
-  real :: rfn
-  real :: a(5) ! Coefficients of a local polynomial minus the target density.
-  real :: zf1, zf2, rfn1, rfn2
-  real :: drfn_dzf, sgn, delta_zf, zf_prev
-  real :: tol
+  real :: rt  ! The current target density [R ~> kg m-3].
+  real :: zf  ! The fractional z-position within a layer of the target density [nondim].
+  real :: rfn ! The target density relative to the interpolated density [R ~> kg m-3]
+  real :: a(5) ! Coefficients of a local polynomial minus the target density [R ~> kg m-3].
+  real :: zf1, zf2   ! Two previous estimates of zf [nondim]
+  real :: rfn1, rfn2 ! Values of rfn at zf1 and zf2 [R ~> kg m-3]
+  real :: drfn_dzf   ! The partial derivative of rfn with zf [R ~> kg m-3]
+  real :: sgn, delta_zf, zf_prev ! [nondim]
+  real :: tol  ! The tolerance for convergence of zf [nondim]
   logical :: k_found ! If true, the position has been found.
   integer :: k_layer ! The index of the stable layer containing an interface.
   integer :: ppoly_degree
@@ -500,7 +548,7 @@ subroutine rho_interfaces_col(rho_col, h_col, z_col, rho_tgt, nz, z_col_new, &
 
   ! This sets up the piecewise polynomials based on the rho_col profile.
   call regridding_set_ppolys(CS%interp_CS, rho_col, nz, h_col, ppoly_i_E, ppoly_i_S, &
-       ppoly_i_coefficients, ppoly_degree)
+       ppoly_i_coefficients, ppoly_degree, h_neglect, h_neglect_edge)
 
   ! Determine the density ranges of unstably stratified segments.
   ! Interfaces that start out in an unstably stratified segment can
@@ -634,7 +682,7 @@ subroutine rho_interfaces_col(rho_col, h_col, z_col, rho_tgt, nz, z_col_new, &
       if (k_layer > 0) then  ! The new location is inside of layer k_layer.
         ! Note that this is coded assuming that this layer is stably stratified.
         if (.not.(ppoly_i_E(k1,2) > ppoly_i_E(k1,1))) call MOM_error(FATAL, &
-          "build_grid_SLight: Erroneously searching for an interface in an unstratified layer.") !### COMMENT OUT LATER?
+          "build_grid_SLight: Erroneously searching for an interface in an unstratified layer.")
 
         ! Use the false position method to find the location (degree <= 1) or the first guess.
         zf = (rt - ppoly_i_E(k1,1)) / (ppoly_i_E(k1,2) - ppoly_i_E(k1,1))
@@ -645,7 +693,7 @@ subroutine rho_interfaces_col(rho_col, h_col, z_col, rho_tgt, nz, z_col_new, &
           ! Bracket the root.
           zf1 = 0.0 ; rfn1 = a(1)
           zf2 = 1.0 ; rfn2 =  a(1) + (a(2) + (a(3) + (a(4) + a(5))))
-          if (rfn1 * rfn2 > 0.0) call MOM_error(FATAL, "build_grid_SLight: Bad bracketing.") !### COMMENT OUT LATER?
+          if (rfn1 * rfn2 > 0.0) call MOM_error(FATAL, "build_grid_SLight: Bad bracketing.")
 
           do itt=1,max_itt
             rfn = a(1) + zf*(a(2) + zf*(a(3) + zf*(a(4) + zf*a(5))))

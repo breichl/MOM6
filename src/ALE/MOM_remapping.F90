@@ -8,11 +8,13 @@ use MOM_error_handler, only : MOM_error, FATAL
 use MOM_string_functions, only : uppercase
 use regrid_edge_values, only : edge_values_explicit_h4, edge_values_implicit_h4
 use regrid_edge_values, only : edge_values_implicit_h4, edge_values_implicit_h6
-use regrid_edge_slopes, only : edge_slopes_implicit_h3, edge_slopes_implicit_h5
+use regrid_edge_values, only : edge_slopes_implicit_h3, edge_slopes_implicit_h5
 use PCM_functions, only : PCM_reconstruction
 use PLM_functions, only : PLM_reconstruction, PLM_boundary_extrapolation
 use PPM_functions, only : PPM_reconstruction, PPM_boundary_extrapolation
 use PQM_functions, only : PQM_reconstruction, PQM_boundary_extrapolation_v1
+
+use iso_fortran_env, only : stdout=>output_unit, stderr=>error_unit
 
 implicit none ; private
 
@@ -33,6 +35,8 @@ type, public :: remapping_CS
   logical :: check_remapping = .false.
   !> If true, the intermediate values used in remapping are forced to be bounded.
   logical :: force_bounds_in_subcell = .false.
+  !> If true use older, less acccurate expressions.
+  logical :: answers_2018 = .true.
 end type
 
 ! The following routines are visible to the outside world
@@ -71,7 +75,7 @@ character(len=3), public :: remappingDefaultScheme = "PLM" !< Default remapping 
 ! outside of the range 0 to 1.
 #define __USE_ROUNDOFF_SAFE_ADJUSTMENTS__
 
-real, parameter :: h_neglect = 1.E-30 !< A dimensional (H units) number that can be
+real, parameter :: hNeglect_dflt = 1.E-30 !< A thickness [H ~> m or kg m-2] that can be
                                       !! added to thicknesses in a denominator without
                                       !! changing the numerical result, except where
                                       !! a division by zero would otherwise occur.
@@ -84,13 +88,14 @@ contains
 
 !> Set parameters within remapping object
 subroutine remapping_set_param(CS, remapping_scheme, boundary_extrapolation,  &
-               check_reconstruction, check_remapping, force_bounds_in_subcell)
+               check_reconstruction, check_remapping, force_bounds_in_subcell, answers_2018)
   type(remapping_CS),         intent(inout) :: CS !< Remapping control structure
   character(len=*), optional, intent(in)    :: remapping_scheme !< Remapping scheme to use
   logical, optional,          intent(in)    :: boundary_extrapolation !< Indicate to extrapolate in boundary cells
   logical, optional,          intent(in)    :: check_reconstruction !< Indicate to check reconstructions
   logical, optional,          intent(in)    :: check_remapping !< Indicate to check results of remapping
   logical, optional,          intent(in)    :: force_bounds_in_subcell !< Force subcells values to be bounded
+  logical, optional,          intent(in)    :: answers_2018 !< If true use older, less acccurate expressions.
 
   if (present(remapping_scheme)) then
     call setReconstructionType( remapping_scheme, CS )
@@ -106,6 +111,9 @@ subroutine remapping_set_param(CS, remapping_scheme, boundary_extrapolation,  &
   endif
   if (present(force_bounds_in_subcell)) then
     CS%force_bounds_in_subcell = force_bounds_in_subcell
+  endif
+  if (present(answers_2018)) then
+    CS%answers_2018 = answers_2018
   endif
 end subroutine remapping_set_param
 
@@ -140,7 +148,7 @@ subroutine buildGridFromH(nz, h, x)
   x(1) = 0.0
   do k = 1,nz
     x(k+1) = x(k) + h(k)
-  end do
+  enddo
 
 end subroutine buildGridFromH
 
@@ -177,9 +185,8 @@ function isPosSumErrSignificant(n1, sum1, n2, sum2)
   endif
 end function isPosSumErrSignificant
 
-!> Remaps column of values u0 on grid h0 to grid h1
-!! assuming the top edge is aligned.
-subroutine remapping_core_h(CS,  n0, h0, u0, n1, h1, u1)
+!> Remaps column of values u0 on grid h0 to grid h1 assuming the top edge is aligned.
+subroutine remapping_core_h(CS, n0, h0, u0, n1, h1, u1, h_neglect, h_neglect_edge)
   type(remapping_CS),  intent(in)  :: CS !< Remapping control structure
   integer,             intent(in)  :: n0 !< Number of cells on source grid
   real, dimension(n0), intent(in)  :: h0 !< Cell widths on source grid
@@ -187,21 +194,32 @@ subroutine remapping_core_h(CS,  n0, h0, u0, n1, h1, u1)
   integer,             intent(in)  :: n1 !< Number of cells on target grid
   real, dimension(n1), intent(in)  :: h1 !< Cell widths on target grid
   real, dimension(n1), intent(out) :: u1 !< Cell averages on target grid
+  real, optional,      intent(in)  :: h_neglect !< A negligibly small width for the
+                                         !! purpose of cell reconstructions
+                                         !! in the same units as h0.
+  real, optional,      intent(in)  :: h_neglect_edge !< A negligibly small width
+                                         !! for the purpose of edge value
+                                         !! calculations in the same units as h0.
   ! Local variables
   integer :: iMethod
   real, dimension(n0,2)           :: ppoly_r_E            !Edge value of polynomial
   real, dimension(n0,2)           :: ppoly_r_S            !Edge slope of polynomial
-  real, dimension(n0,CS%degree+1) :: ppoly_r_coefficients !Coefficients of polynomial
+  real, dimension(n0,CS%degree+1) :: ppoly_r_coefs !Coefficients of polynomial
   integer :: k
   real :: eps, h0tot, h0err, h1tot, h1err, u0tot, u0err, u0min, u0max, u1tot, u1err, u1min, u1max, uh_err
+  real :: hNeglect, hNeglect_edge
 
-  call build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefficients, ppoly_r_E, ppoly_r_S, iMethod )
+  hNeglect = 1.0e-30 ; if (present(h_neglect)) hNeglect = h_neglect
+  hNeglect_edge = 1.0e-10 ; if (present(h_neglect_edge)) hNeglect_edge = h_neglect_edge
+
+  call build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefs, ppoly_r_E, ppoly_r_S, iMethod, &
+                                 hNeglect, hNeglect_edge )
 
   if (CS%check_reconstruction) call check_reconstructions_1d(n0, h0, u0, CS%degree, &
-                                   CS%boundary_extrapolation, ppoly_r_coefficients, ppoly_r_E, ppoly_r_S)
+                                   CS%boundary_extrapolation, ppoly_r_coefs, ppoly_r_E, ppoly_r_S)
 
 
-  call remap_via_sub_cells( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients, n1, h1, iMethod, &
+  call remap_via_sub_cells( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, n1, h1, iMethod, &
                             CS%force_bounds_in_subcell, u1, uh_err )
 
   if (CS%check_remapping) then
@@ -213,9 +231,11 @@ subroutine remapping_core_h(CS,  n0, h0, u0, n1, h1, u1)
         .or. (u1min<u0min .or. u1max>u0max) ) then
       write(0,*) 'iMethod = ',iMethod
       write(0,*) 'H: h0tot=',h0tot,'h1tot=',h1tot,'dh=',h1tot-h0tot,'h0err=',h0err,'h1err=',h1err
-      if (abs(h1tot-h0tot)>h0err+h1err) write(0,*) 'H non-conservation difference=',h1tot-h0tot,'allowed err=',h0err+h1err,' <-----!'
+      if (abs(h1tot-h0tot)>h0err+h1err) &
+        write(0,*) 'H non-conservation difference=',h1tot-h0tot,'allowed err=',h0err+h1err,' <-----!'
       write(0,*) 'UH: u0tot=',u0tot,'u1tot=',u1tot,'duh=',u1tot-u0tot,'u0err=',u0err,'u1err=',u1err,'uh_err=',uh_err
-      if (abs(u1tot-u0tot)>(u0err+u1err)+uh_err) write(0,*) 'U non-conservation difference=',u1tot-u0tot,'allowed err=',u0err+u1err+uh_err,' <-----!'
+      if (abs(u1tot-u0tot)>(u0err+u1err)+uh_err) &
+        write(0,*) 'U non-conservation difference=',u1tot-u0tot,'allowed err=',u0err+u1err+uh_err,' <-----!'
       write(0,*) 'U: u0min=',u0min,'u1min=',u1min
       if (u1min<u0min) write(0,*) 'U minimum overshoot=',u1min-u0min,' <-----!'
       write(0,*) 'U: u0max=',u0max,'u1max=',u1max
@@ -232,7 +252,7 @@ subroutine remapping_core_h(CS,  n0, h0, u0, n1, h1, u1)
       enddo
       write(0,'(a3,2a24)') 'k','u0','Polynomial coefficients'
       do k = 1, n0
-        write(0,'(i3,1p6e24.16)') k,u0(k),ppoly_r_coefficients(k,:)
+        write(0,'(i3,1p6e24.16)') k,u0(k),ppoly_r_coefs(k,:)
       enddo
       call MOM_error( FATAL, 'MOM_remapping, remapping_core_h: '//&
              'Remapping result is inconsistent!' )
@@ -244,28 +264,39 @@ end subroutine remapping_core_h
 
 !> Remaps column of values u0 on grid h0 to implied grid h1
 !! where the interfaces of h1 differ from those of h0 by dx.
-subroutine remapping_core_w( CS, n0, h0, u0, n1, dx, u1 )
+subroutine remapping_core_w( CS, n0, h0, u0, n1, dx, u1, h_neglect, h_neglect_edge )
   type(remapping_CS),  intent(in)  :: CS !< Remapping control structure
   integer,             intent(in)  :: n0 !< Number of cells on source grid
   real, dimension(n0), intent(in)  :: h0 !< Cell widths on source grid
   real, dimension(n0), intent(in)  :: u0 !< Cell averages on source grid
   integer,             intent(in)  :: n1 !< Number of cells on target grid
-  real, dimension(n1+1), intent(in)  :: dx !< Cell widths on target grid
+  real, dimension(n1+1), intent(in) :: dx !< Cell widths on target grid
   real, dimension(n1), intent(out) :: u1 !< Cell averages on target grid
+  real, optional,      intent(in)  :: h_neglect !< A negligibly small width for the
+                                         !! purpose of cell reconstructions
+                                         !! in the same units as h0.
+  real, optional,      intent(in)  :: h_neglect_edge !< A negligibly small width
+                                         !! for the purpose of edge value
+                                         !! calculations in the same units as h0.
   ! Local variables
   integer :: iMethod
   real, dimension(n0,2)           :: ppoly_r_E            !Edge value of polynomial
   real, dimension(n0,2)           :: ppoly_r_S            !Edge slope of polynomial
-  real, dimension(n0,CS%degree+1) :: ppoly_r_coefficients !Coefficients of polynomial
+  real, dimension(n0,CS%degree+1) :: ppoly_r_coefs !Coefficients of polynomial
   integer :: k
   real :: eps, h0tot, h0err, h1tot, h1err
   real :: u0tot, u0err, u0min, u0max, u1tot, u1err, u1min, u1max, uh_err
   real, dimension(n1) :: h1 !< Cell widths on target grid
+  real :: hNeglect, hNeglect_edge
 
-  call build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefficients, ppoly_r_E, ppoly_r_S, iMethod )
+  hNeglect = 1.0e-30 ; if (present(h_neglect)) hNeglect = h_neglect
+  hNeglect_edge = 1.0e-10 ; if (present(h_neglect_edge)) hNeglect_edge = h_neglect_edge
+
+  call build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefs, ppoly_r_E, ppoly_r_S, iMethod,&
+                                  hNeglect, hNeglect_edge )
 
   if (CS%check_reconstruction) call check_reconstructions_1d(n0, h0, u0, CS%degree, &
-                                   CS%boundary_extrapolation, ppoly_r_coefficients, ppoly_r_E, ppoly_r_S)
+                                   CS%boundary_extrapolation, ppoly_r_coefs, ppoly_r_E, ppoly_r_S)
 
   ! This is a temporary step prior to switching to remapping_core_h()
   do k = 1, n1
@@ -275,10 +306,10 @@ subroutine remapping_core_w( CS, n0, h0, u0, n1, dx, u1 )
       h1(k) = max( 0., dx(k+1) - dx(k) )
     endif
   enddo
-  call remap_via_sub_cells( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients, n1, h1, iMethod, &
+  call remap_via_sub_cells( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, n1, h1, iMethod, &
                             CS%force_bounds_in_subcell,u1, uh_err )
-! call remapByDeltaZ( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients, n1, dx, iMethod, u1 )
-! call remapByProjection( n0, h0, u0, CS%ppoly_r, n1, h1, iMethod, u1 )
+! call remapByDeltaZ( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, n1, dx, iMethod, u1, hNeglect )
+! call remapByProjection( n0, h0, u0, CS%ppoly_r, n1, h1, iMethod, u1, hNeglect )
 
   if (CS%check_remapping) then
     ! Check errors and bounds
@@ -289,9 +320,11 @@ subroutine remapping_core_w( CS, n0, h0, u0, n1, dx, u1 )
         .or. (u1min<u0min .or. u1max>u0max) ) then
       write(0,*) 'iMethod = ',iMethod
       write(0,*) 'H: h0tot=',h0tot,'h1tot=',h1tot,'dh=',h1tot-h0tot,'h0err=',h0err,'h1err=',h1err
-      if (abs(h1tot-h0tot)>h0err+h1err) write(0,*) 'H non-conservation difference=',h1tot-h0tot,'allowed err=',h0err+h1err,' <-----!'
+      if (abs(h1tot-h0tot)>h0err+h1err) &
+        write(0,*) 'H non-conservation difference=',h1tot-h0tot,'allowed err=',h0err+h1err,' <-----!'
       write(0,*) 'UH: u0tot=',u0tot,'u1tot=',u1tot,'duh=',u1tot-u0tot,'u0err=',u0err,'u1err=',u1err,'uh_err=',uh_err
-      if (abs(u1tot-u0tot)>(u0err+u1err)+uh_err) write(0,*) 'U non-conservation difference=',u1tot-u0tot,'allowed err=',u0err+u1err+uh_err,' <-----!'
+      if (abs(u1tot-u0tot)>(u0err+u1err)+uh_err) &
+        write(0,*) 'U non-conservation difference=',u1tot-u0tot,'allowed err=',u0err+u1err+uh_err,' <-----!'
       write(0,*) 'U: u0min=',u0min,'u1min=',u1min
       if (u1min<u0min) write(0,*) 'U minimum overshoot=',u1min-u0min,' <-----!'
       write(0,*) 'U: u0max=',u0max,'u1max=',u1max
@@ -308,7 +341,7 @@ subroutine remapping_core_w( CS, n0, h0, u0, n1, dx, u1 )
       enddo
       write(0,'(a3,2a24)') 'k','u0','Polynomial coefficients'
       do k = 1, n0
-        write(0,'(i3,1p6e24.16)') k,u0(k),ppoly_r_coefficients(k,:)
+        write(0,'(i3,1p6e24.16)') k,u0(k),ppoly_r_coefs(k,:)
       enddo
       call MOM_error( FATAL, 'MOM_remapping, remapping_core_w: '//&
              'Remapping result is inconsistent!' )
@@ -319,15 +352,24 @@ subroutine remapping_core_w( CS, n0, h0, u0, n1, dx, u1 )
 end subroutine remapping_core_w
 
 !> Creates polynomial reconstructions of u0 on the source grid h0.
-subroutine build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefficients, ppoly_r_E, ppoly_r_S, iMethod )
-  type(remapping_CS),              intent(in)  :: CS
-  integer,                         intent(in)  :: n0 !< Number of cells on source grid
-  real, dimension(n0),             intent(in)  :: h0 !< Cell widths on source grid
-  real, dimension(n0),             intent(in)  :: u0 !< Cell averages on source grid
-  real, dimension(n0,CS%degree+1), intent(out) :: ppoly_r_coefficients !< Coefficients of polynomial
-  real, dimension(n0,2),           intent(out) :: ppoly_r_E !< Edge value of polynomial
-  real, dimension(n0,2),           intent(out) :: ppoly_r_S !< Edge slope of polynomial
-  integer,                         intent(out) :: iMethod !< Integration method
+subroutine build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefs, &
+                                     ppoly_r_E, ppoly_r_S, iMethod, h_neglect, &
+                                     h_neglect_edge )
+  type(remapping_CS),    intent(in)  :: CS !< Remapping control structure
+  integer,               intent(in)  :: n0 !< Number of cells on source grid
+  real, dimension(n0),   intent(in)  :: h0 !< Cell widths on source grid
+  real, dimension(n0),   intent(in)  :: u0 !< Cell averages on source grid
+  real, dimension(n0,CS%degree+1), &
+                         intent(out) :: ppoly_r_coefs !< Coefficients of polynomial
+  real, dimension(n0,2), intent(out) :: ppoly_r_E !< Edge value of polynomial
+  real, dimension(n0,2), intent(out) :: ppoly_r_S !< Edge slope of polynomial
+  integer,               intent(out) :: iMethod !< Integration method
+  real, optional,        intent(in)  :: h_neglect !< A negligibly small width for the
+                                         !! purpose of cell reconstructions
+                                         !! in the same units as h0.
+  real, optional,        intent(in)  :: h_neglect_edge !< A negligibly small width
+                                         !! for the purpose of edge value
+                                         !! calculations in the same units as h0.
   ! Local variables
   integer :: local_remapping_scheme
   integer :: remapping_scheme !< Remapping scheme
@@ -336,7 +378,7 @@ subroutine build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefficients, ppoly
   ! Reset polynomial
   ppoly_r_E(:,:) = 0.0
   ppoly_r_S(:,:) = 0.0
-  ppoly_r_coefficients(:,:) = 0.0
+  ppoly_r_coefs(:,:) = 0.0
   iMethod = -999
 
   local_remapping_scheme = CS%remapping_scheme
@@ -349,43 +391,47 @@ subroutine build_reconstructions_1d( CS, n0, h0, u0, ppoly_r_coefficients, ppoly
   endif
   select case ( local_remapping_scheme )
     case ( REMAPPING_PCM )
-      call PCM_reconstruction( n0, u0, ppoly_r_E, ppoly_r_coefficients)
+      call PCM_reconstruction( n0, u0, ppoly_r_E, ppoly_r_coefs)
       iMethod = INTEGRATION_PCM
     case ( REMAPPING_PLM )
-      call PLM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients )
+      call PLM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, h_neglect )
       if ( CS%boundary_extrapolation ) then
-        call PLM_boundary_extrapolation( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients)
-      end if
+        call PLM_boundary_extrapolation( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, h_neglect)
+      endif
       iMethod = INTEGRATION_PLM
     case ( REMAPPING_PPM_H4 )
-      call edge_values_explicit_h4( n0, h0, u0, ppoly_r_E )
-      call PPM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients )
+      call edge_values_explicit_h4( n0, h0, u0, ppoly_r_E, h_neglect_edge, answers_2018=CS%answers_2018 )
+      call PPM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, h_neglect, answers_2018=CS%answers_2018 )
       if ( CS%boundary_extrapolation ) then
-        call PPM_boundary_extrapolation( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients )
-      end if
+        call PPM_boundary_extrapolation( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, h_neglect )
+      endif
       iMethod = INTEGRATION_PPM
     case ( REMAPPING_PPM_IH4 )
-      call edge_values_implicit_h4( n0, h0, u0, ppoly_r_E )
-      call PPM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients )
+      call edge_values_implicit_h4( n0, h0, u0, ppoly_r_E, h_neglect_edge, answers_2018=CS%answers_2018 )
+      call PPM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, h_neglect, answers_2018=CS%answers_2018 )
       if ( CS%boundary_extrapolation ) then
-        call PPM_boundary_extrapolation( n0, h0, u0, ppoly_r_E, ppoly_r_coefficients )
-      end if
+        call PPM_boundary_extrapolation( n0, h0, u0, ppoly_r_E, ppoly_r_coefs, h_neglect )
+      endif
       iMethod = INTEGRATION_PPM
     case ( REMAPPING_PQM_IH4IH3 )
-      call edge_values_implicit_h4( n0, h0, u0, ppoly_r_E )
-      call edge_slopes_implicit_h3( n0, h0, u0, ppoly_r_S )
-      call PQM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_S, ppoly_r_coefficients )
+      call edge_values_implicit_h4( n0, h0, u0, ppoly_r_E, h_neglect_edge, answers_2018=CS%answers_2018 )
+      call edge_slopes_implicit_h3( n0, h0, u0, ppoly_r_S, h_neglect, answers_2018=CS%answers_2018 )
+      call PQM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_S, ppoly_r_coefs, h_neglect, &
+                               answers_2018=CS%answers_2018 )
       if ( CS%boundary_extrapolation ) then
-        call PQM_boundary_extrapolation_v1( n0, h0, u0, ppoly_r_E, ppoly_r_S, ppoly_r_coefficients )
-      end if
+        call PQM_boundary_extrapolation_v1( n0, h0, u0, ppoly_r_E, ppoly_r_S, &
+                                            ppoly_r_coefs, h_neglect )
+      endif
       iMethod = INTEGRATION_PQM
     case ( REMAPPING_PQM_IH6IH5 )
-      call edge_values_implicit_h6( n0, h0, u0, ppoly_r_E )
-      call edge_slopes_implicit_h5( n0, h0, u0, ppoly_r_S )
-      call PQM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_S, ppoly_r_coefficients )
+      call edge_values_implicit_h6( n0, h0, u0, ppoly_r_E, h_neglect_edge, answers_2018=CS%answers_2018 )
+      call edge_slopes_implicit_h5( n0, h0, u0, ppoly_r_S, h_neglect, answers_2018=CS%answers_2018 )
+      call PQM_reconstruction( n0, h0, u0, ppoly_r_E, ppoly_r_S, ppoly_r_coefs, h_neglect, &
+                               answers_2018=CS%answers_2018 )
       if ( CS%boundary_extrapolation ) then
-        call PQM_boundary_extrapolation_v1( n0, h0, u0, ppoly_r_E, ppoly_r_S, ppoly_r_coefficients )
-      end if
+        call PQM_boundary_extrapolation_v1( n0, h0, u0, ppoly_r_E, ppoly_r_S, &
+                                            ppoly_r_coefs, h_neglect )
+      endif
       iMethod = INTEGRATION_PQM
     case default
       call MOM_error( FATAL, 'MOM_remapping, build_reconstructions_1d: '//&
@@ -396,13 +442,13 @@ end subroutine build_reconstructions_1d
 
 !> Checks that edge values and reconstructions satisfy bounds
 subroutine check_reconstructions_1d(n0, h0, u0, deg, boundary_extrapolation, &
-                                    ppoly_r_coefficients, ppoly_r_E, ppoly_r_S)
+                                    ppoly_r_coefs, ppoly_r_E, ppoly_r_S)
   integer,                  intent(in)  :: n0 !< Number of cells on source grid
   real, dimension(n0),      intent(in)  :: h0 !< Cell widths on source grid
   real, dimension(n0),      intent(in)  :: u0 !< Cell averages on source grid
   integer,                  intent(in)  :: deg !< Degree of polynomial reconstruction
   logical,                  intent(in)  :: boundary_extrapolation !< Extrapolate at boundaries if true
-  real, dimension(n0,deg+1),intent(out) :: ppoly_r_coefficients !< Coefficients of polynomial
+  real, dimension(n0,deg+1),intent(out) :: ppoly_r_coefs !< Coefficients of polynomial
   real, dimension(n0,2),    intent(out) :: ppoly_r_E !< Edge value of polynomial
   real, dimension(n0,2),    intent(out) :: ppoly_r_S !< Edge slope of polynomial
   ! Local variables
@@ -453,11 +499,11 @@ subroutine check_reconstructions_1d(n0, h0, u0, deg, boundary_extrapolation, &
       endif
     endif
     if (problem_detected) then
-      write(0,'(a,1p9e24.16)') 'Polynomial coeffs:',ppoly_r_coefficients(i0,:)
+      write(0,'(a,1p9e24.16)') 'Polynomial coeffs:',ppoly_r_coefs(i0,:)
       write(0,'(3(a,1pe24.16,x))') 'u_l=',u_l,'u_c=',u_c,'u_r=',u_r
       write(0,'(a4,10a24)') 'i0','h0(i0)','u0(i0)','left edge','right edge','Polynomial coefficients'
       do n = 1, n0
-        write(0,'(i4,1p10e24.16)') n,h0(n),u0(n),ppoly_r_E(n,1),ppoly_r_E(n,2),ppoly_r_coefficients(n,:)
+        write(0,'(i4,1p10e24.16)') n,h0(n),u0(n),ppoly_r_E(n,1),ppoly_r_E(n,2),ppoly_r_coefs(n,:)
       enddo
       call MOM_error(FATAL, 'MOM_remapping, check_reconstructions_1d: '// &
                    'Edge values or polynomial coefficients were inconsistent!')
@@ -468,14 +514,14 @@ end subroutine check_reconstructions_1d
 
 !> Remaps column of n0 values u0 on grid h0 to grid h1 with n1 cells by calculating
 !! the n0+n1+1 sub-integrals of the intersection of h0 and h1, and the summing the
-!! appropriate integrals into the h1*u1 values.
-subroutine remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, h1, method, &
+!! appropriate integrals into the h1*u1 values.  h0 and h1 must have the same units.
+subroutine remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefs, n1, h1, method, &
                                 force_bounds_in_subcell, u1, uh_err, ah_sub, aisub_src, aiss, aise )
   integer,           intent(in)    :: n0     !< Number of cells in source grid
   real,              intent(in)    :: h0(n0)  !< Source grid widths (size n0)
   real,              intent(in)    :: u0(n0)  !< Source cell averages (size n0)
   real,              intent(in)    :: ppoly0_E(n0,2)            !< Edge value of polynomial
-  real,              intent(in)    :: ppoly0_coefficients(:,:) !< Coefficients of polynomial
+  real,              intent(in)    :: ppoly0_coefs(:,:) !< Coefficients of polynomial
   integer,           intent(in)    :: n1     !< Number of cells in target grid
   real,              intent(in)    :: h1(n1)  !< Target grid widths (size n1)
   integer,           intent(in)    :: method !< Remapping scheme to use
@@ -697,7 +743,7 @@ subroutine remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, h
     if (h0_eff(i0)>0.) then
       xb = dh0_eff / h0_eff(i0) ! This expression yields xa <= xb <= 1.0
       xb = min(1., xb) ! This is only needed when the total target column is wider than the source column
-      u_sub(i_sub) = average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefficients, method, i0, xa, xb)
+      u_sub(i_sub) = average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefs, method, i0, xa, xb)
     else ! Vanished cell
       xb = 1.
       u_sub(i_sub) = u0(i0)
@@ -708,7 +754,7 @@ subroutine remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, h
         write(0,*) 'xa,xb: ',xa,xb
         write(0,*) 'Edge values: ',ppoly0_E(i0,:),'mean',u0(i0)
         write(0,*) 'a_c: ',(u0(i0)-ppoly0_E(i0,1))+(u0(i0)-ppoly0_E(i0,2))
-        write(0,*) 'Polynomial coeffs: ',ppoly0_coefficients(i0,:)
+        write(0,*) 'Polynomial coeffs: ',ppoly0_coefs(i0,:)
         write(0,*) 'Bounds min=',u0_min(i0),'max=',u0_max(i0)
         write(0,*) 'Average: ',u_sub(i_sub),'rel to min=',u_sub(i_sub)-u0_min(i0),'rel to max=',u_sub(i_sub)-u0_max(i0)
         call MOM_error( FATAL, 'MOM_remapping, remap_via_sub_cells: '//&
@@ -803,19 +849,26 @@ subroutine remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, h
       write(0,*) 'method = ',method
       write(0,*) 'Source to sub-cells:'
       write(0,*) 'H: h0tot=',h0tot,'h2tot=',h2tot,'dh=',h2tot-h0tot,'h0err=',h0err,'h2err=',h2err
-      if (abs(h2tot-h0tot)>h0err+h2err) write(0,*) 'H non-conservation difference=',h2tot-h0tot,'allowed err=',h0err+h2err,' <-----!'
-      write(0,*) 'UH: u0tot=',u0tot,'u2tot=',u2tot,'duh=',u2tot-u0tot,'u0err=',u0err,'u2err=',u2err,'adjustment err=',u02_err
-      if (abs(u2tot-u0tot)>u0err+u2err) write(0,*) 'U non-conservation difference=',u2tot-u0tot,'allowed err=',u0err+u2err,' <-----!'
+      if (abs(h2tot-h0tot)>h0err+h2err) &
+        write(0,*) 'H non-conservation difference=',h2tot-h0tot,'allowed err=',h0err+h2err,' <-----!'
+      write(0,*) 'UH: u0tot=',u0tot,'u2tot=',u2tot,'duh=',u2tot-u0tot,'u0err=',u0err,'u2err=',u2err,&
+                 'adjustment err=',u02_err
+      if (abs(u2tot-u0tot)>u0err+u2err) &
+        write(0,*) 'U non-conservation difference=',u2tot-u0tot,'allowed err=',u0err+u2err,' <-----!'
       write(0,*) 'Sub-cells to target:'
       write(0,*) 'H: h2tot=',h2tot,'h1tot=',h1tot,'dh=',h1tot-h2tot,'h2err=',h2err,'h1err=',h1err
-      if (abs(h1tot-h2tot)>h2err+h1err) write(0,*) 'H non-conservation difference=',h1tot-h2tot,'allowed err=',h2err+h1err,' <-----!'
+      if (abs(h1tot-h2tot)>h2err+h1err) &
+        write(0,*) 'H non-conservation difference=',h1tot-h2tot,'allowed err=',h2err+h1err,' <-----!'
       write(0,*) 'UH: u2tot=',u2tot,'u1tot=',u1tot,'duh=',u1tot-u2tot,'u2err=',u2err,'u1err=',u1err,'uh_err=',uh_err
-      if (abs(u1tot-u2tot)>u2err+u1err) write(0,*) 'U non-conservation difference=',u1tot-u2tot,'allowed err=',u2err+u1err,' <-----!'
+      if (abs(u1tot-u2tot)>u2err+u1err) &
+        write(0,*) 'U non-conservation difference=',u1tot-u2tot,'allowed err=',u2err+u1err,' <-----!'
       write(0,*) 'Source to target:'
       write(0,*) 'H: h0tot=',h0tot,'h1tot=',h1tot,'dh=',h1tot-h0tot,'h0err=',h0err,'h1err=',h1err
-      if (abs(h1tot-h0tot)>h0err+h1err) write(0,*) 'H non-conservation difference=',h1tot-h0tot,'allowed err=',h0err+h1err,' <-----!'
+      if (abs(h1tot-h0tot)>h0err+h1err) &
+        write(0,*) 'H non-conservation difference=',h1tot-h0tot,'allowed err=',h0err+h1err,' <-----!'
       write(0,*) 'UH: u0tot=',u0tot,'u1tot=',u1tot,'duh=',u1tot-u0tot,'u0err=',u0err,'u1err=',u1err,'uh_err=',uh_err
-      if (abs(u1tot-u0tot)>(u0err+u1err)+uh_err) write(0,*) 'U non-conservation difference=',u1tot-u0tot,'allowed err=',u0err+u1err+uh_err,' <-----!'
+      if (abs(u1tot-u0tot)>(u0err+u1err)+uh_err) &
+        write(0,*) 'U non-conservation difference=',u1tot-u0tot,'allowed err=',u0err+u1err+uh_err,' <-----!'
       write(0,*) 'U: u0min=',u0min,'u1min=',u1min,'u2min=',u2min
       if (u1min<u0min) write(0,*) 'U minimum overshoot=',u1min-u0min,' <-----!'
       if (u2min<u0min) write(0,*) 'U2 minimum overshoot=',u2min-u0min,' <-----!'
@@ -834,7 +887,7 @@ subroutine remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, h
       enddo
       write(0,'(a3,2a24)') 'k','u0','Polynomial coefficients'
       do k = 1, n0
-        write(0,'(i3,1p6e24.16)') k,u0(k),ppoly0_coefficients(k,:)
+        write(0,'(i3,1p6e24.16)') k,u0(k),ppoly0_coefs(k,:)
       enddo
       write(0,'(a3,3a24,a3,2a24)') 'k','Sub-cell h','Sub-cell u','Sub-cell hu','i0','xa','xb'
       xa = 0.
@@ -873,11 +926,11 @@ end subroutine remap_via_sub_cells
 !> Returns the average value of a reconstruction within a single source cell, i0,
 !! between the non-dimensional positions xa and xb (xa<=xb) with dimensional
 !! separation dh.
-real function average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefficients, method, i0, xa, xb)
+real function average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefs, method, i0, xa, xb)
   integer,       intent(in)    :: n0     !< Number of cells in source grid
   real,          intent(in)    :: u0(:)  !< Cell means
-  real,          intent(in)    :: ppoly0_E(:,:)            !< Edge value of polynomial
-  real,          intent(in)    :: ppoly0_coefficients(:,:) !< Coefficients of polynomial
+  real,          intent(in)    :: ppoly0_E(:,:)     !< Edge value of polynomial
+  real,          intent(in)    :: ppoly0_coefs(:,:) !< Coefficients of polynomial
   integer,       intent(in)    :: method !< Remapping scheme to use
   integer,       intent(in)    :: i0     !< Source cell index
   real,          intent(in)    :: xa     !< Non-dimensional start position within source cell
@@ -894,8 +947,8 @@ real function average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefficients, method
         u_ave = u0(i0)
       case ( INTEGRATION_PLM )
         u_ave = (                                           &
-            ppoly0_coefficients(i0,1)                       &
-          + ppoly0_coefficients(i0,2) * 0.5 * ( xb + xa ) )
+            ppoly0_coefs(i0,1)                       &
+          + ppoly0_coefs(i0,2) * 0.5 * ( xb + xa ) )
       case ( INTEGRATION_PPM )
         mx = 0.5 * ( xa + xb )
         a_L = ppoly0_E(i0, 1)
@@ -922,21 +975,21 @@ real function average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefficients, method
         xa2pxb2 = xa_2 + xb_2
         xapxb = xa + xb
         u_ave = (                                                                               &
-              ppoly0_coefficients(i0,1)                                                         &
-          + ( ppoly0_coefficients(i0,2) * 0.5 * ( xapxb )                                       &
-          + ( ppoly0_coefficients(i0,3) * r_3 * ( xa2pxb2 + xa*xb )                             &
-          + ( ppoly0_coefficients(i0,4) * 0.25* ( xa2pxb2 * xapxb )                             &
-          +   ppoly0_coefficients(i0,5) * 0.2 * ( ( xb*xb_2 + xa*xa_2 ) * xapxb + xa_2*xb_2 ) ) ) ) )
+              ppoly0_coefs(i0,1)                                                         &
+          + ( ppoly0_coefs(i0,2) * 0.5 * ( xapxb )                                       &
+          + ( ppoly0_coefs(i0,3) * r_3 * ( xa2pxb2 + xa*xb )                             &
+          + ( ppoly0_coefs(i0,4) * 0.25* ( xa2pxb2 * xapxb )                             &
+          +   ppoly0_coefs(i0,5) * 0.2 * ( ( xb*xb_2 + xa*xa_2 ) * xapxb + xa_2*xb_2 ) ) ) ) )
       case default
         call MOM_error( FATAL,'The selected integration method is invalid' )
     end select
   else ! dh == 0.
     select case ( method )
       case ( INTEGRATION_PCM )
-        u_ave =        ppoly0_coefficients(i0,1)
+        u_ave =        ppoly0_coefs(i0,1)
       case ( INTEGRATION_PLM )
-       !u_ave =        ppoly0_coefficients(i0,1)   &
-       !      + xa *   ppoly0_coefficients(i0,2)
+       !u_ave =        ppoly0_coefs(i0,1)   &
+       !      + xa *   ppoly0_coefs(i0,2)
         a_L = ppoly0_E(i0, 1)
         a_R = ppoly0_E(i0, 2)
         Ya = 1. - xa
@@ -946,9 +999,9 @@ real function average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefficients, method
           u_ave = a_R + Ya * ( a_L - a_R )
         endif
       case ( INTEGRATION_PPM )
-       !u_ave =        ppoly0_coefficients(i0,1)   &
-       !      + xa * ( ppoly0_coefficients(i0,2)   &
-       !      + xa *   ppoly0_coefficients(i0,3) )
+       !u_ave =        ppoly0_coefs(i0,1)   &
+       !      + xa * ( ppoly0_coefs(i0,2)   &
+       !      + xa *   ppoly0_coefs(i0,3) )
         a_L = ppoly0_E(i0, 1)
         a_R = ppoly0_E(i0, 2)
         u_c = u0(i0)
@@ -960,11 +1013,11 @@ real function average_value_ppoly( n0, u0, ppoly0_E, ppoly0_coefficients, method
           u_ave = a_R + Ya * ( ( a_L - a_R ) + a_c * xa )
         endif
       case ( INTEGRATION_PQM )
-        u_ave =        ppoly0_coefficients(i0,1)   &
-              + xa * ( ppoly0_coefficients(i0,2)   &
-              + xa * ( ppoly0_coefficients(i0,3)   &
-              + xa * ( ppoly0_coefficients(i0,4)   &
-              + xa *   ppoly0_coefficients(i0,5) ) ) )
+        u_ave =        ppoly0_coefs(i0,1)   &
+              + xa * ( ppoly0_coefs(i0,2)   &
+              + xa * ( ppoly0_coefs(i0,3)   &
+              + xa * ( ppoly0_coefs(i0,4)   &
+              + xa *   ppoly0_coefs(i0,5) ) ) )
       case default
         call MOM_error( FATAL,'The selected integration method is invalid' )
     end select
@@ -1042,16 +1095,20 @@ end subroutine measure_output_bounds
 
 !> Remaps column of values u0 on grid h0 to grid h1 by integrating
 !! over the projection of each h1 cell onto the h0 grid.
-subroutine remapByProjection( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, h1, method, u1 )
+subroutine remapByProjection( n0, h0, u0, ppoly0_E, ppoly0_coefs, &
+                              n1, h1, method, u1, h_neglect )
   integer,       intent(in)    :: n0     !< Number of cells in source grid
   real,          intent(in)    :: h0(:)  !< Source grid widths (size n0)
   real,          intent(in)    :: u0(:)  !< Source cell averages (size n0)
-  real,          intent(in)    :: ppoly0_E(:,:)            !< Edge value of polynomial
-  real,          intent(in)    :: ppoly0_coefficients(:,:) !< Coefficients of polynomial
+  real,          intent(in)    :: ppoly0_E(:,:)     !< Edge value of polynomial
+  real,          intent(in)    :: ppoly0_coefs(:,:) !< Coefficients of polynomial
   integer,       intent(in)    :: n1     !< Number of cells in target grid
   real,          intent(in)    :: h1(:)  !< Target grid widths (size n1)
   integer,       intent(in)    :: method !< Remapping scheme to use
   real,          intent(out)   :: u1(:)  !< Target cell averages (size n1)
+  real, optional, intent(in)   :: h_neglect !< A negligibly small width for the
+                                           !! purpose of cell reconstructions
+                                           !! in the same units as h.
   ! Local variables
   integer       :: iTarget
   real          :: xL, xR       ! coordinates of target cell edges
@@ -1069,10 +1126,10 @@ subroutine remapByProjection( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, h1,
     xL = xR
     xR = xL + h1(iTarget)
 
-    call integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, method, &
-                                   xL, xR, h1(iTarget), u1(iTarget), jStart, xStart )
+    call integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefs, method, &
+                                   xL, xR, h1(iTarget), u1(iTarget), jStart, xStart, h_neglect )
 
-  end do ! end iTarget loop on target grid cells
+  enddo ! end iTarget loop on target grid cells
 
 end subroutine remapByProjection
 
@@ -1086,17 +1143,22 @@ end subroutine remapByProjection
 !! where
 !!  F(k) = dx1(k) qAverage
 !! and where qAverage is the average qOld in the region zOld(k) to zNew(k).
-subroutine remapByDeltaZ( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, dx1, method, u1, h1 )
-  integer,        intent(in)  :: n0     !< Number of cells in source grid
-  real,           intent(in)  :: h0(:)  !< Source grid widths (size n0)
-  real,           intent(in)  :: u0(:)  !< Source cell averages (size n0)
-  real,           intent(in)  :: ppoly0_E(:,:)            !< Edge value of polynomial
-  real,           intent(in)  :: ppoly0_coefficients(:,:) !< Coefficients of polynomial
-  integer,        intent(in)  :: n1     !< Number of cells in target grid
-  real,           intent(in)  :: dx1(:) !< Target grid edge positions (size n1+1)
-  integer                     :: method !< Remapping scheme to use
-  real,           intent(out) :: u1(:)  !< Target cell averages (size n1)
-  real, optional, intent(out) :: h1(:)  !< Target grid widths (size n1)
+subroutine remapByDeltaZ( n0, h0, u0, ppoly0_E, ppoly0_coefs, n1, dx1, &
+                          method, u1, h1, h_neglect )
+  integer,              intent(in)  :: n0     !< Number of cells in source grid
+  real, dimension(:),   intent(in)  :: h0     !< Source grid sizes (size n0)
+  real, dimension(:),   intent(in)  :: u0     !< Source cell averages (size n0)
+  real, dimension(:,:), intent(in)  :: ppoly0_E !< Edge value of polynomial
+  real, dimension(:,:), intent(in)  :: ppoly0_coefs !< Coefficients of polynomial
+  integer,              intent(in)  :: n1     !< Number of cells in target grid
+  real, dimension(:),   intent(in)  :: dx1    !< Target grid edge positions (size n1+1)
+  integer,              intent(in)  :: method !< Remapping scheme to use
+  real, dimension(:),   intent(out) :: u1     !< Target cell averages (size n1)
+  real, dimension(:), &
+              optional, intent(out) :: h1     !< Target grid widths (size n1)
+  real,       optional, intent(in)  :: h_neglect !< A negligibly small width for the
+                                           !! purpose of cell reconstructions
+                                           !! in the same units as h.
   ! Local variables
   integer :: iTarget
   real    :: xL, xR    ! coordinates of target cell edges
@@ -1137,7 +1199,7 @@ subroutine remapByDeltaZ( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, dx1, me
 
     ! hFlux is the positive width of the remapped volume
     hFlux = abs(dx1(iTarget+1))
-    call integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, method, &
+    call integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefs, method, &
                                    xL, xR, hFlux, uAve, jStart, xStart )
     ! uAve is the average value of u, independent of sign of dx1
     fluxR = dx1(iTarget+1)*uAve ! Includes sign of dx1
@@ -1154,27 +1216,31 @@ subroutine remapByDeltaZ( n0, h0, u0, ppoly0_E, ppoly0_coefficients, n1, dx1, me
       if (present(h1)) h1(iTarget) = hNew
     endif
 
-  end do ! end iTarget loop on target grid cells
+  enddo ! end iTarget loop on target grid cells
 
 end subroutine remapByDeltaZ
 
 
 !> Integrate the reconstructed column profile over a single cell
-subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, method, &
-                                     xL, xR, hC, uAve, jStart, xStart )
-  integer, intent(in)  :: n0       !< Number of cells in source grid
-  real,    intent(in)  :: h0(:)    !< Source grid sizes (size n0)
-  real,    intent(in)  :: u0(:)    !< Source cell averages
-  real,    intent(in)  :: ppoly0_E(:,:)            !< Edge value of polynomial
-  real,    intent(in)  :: ppoly0_coefficients(:,:) !< Coefficients of polynomial
-  integer, intent(in)  :: method   !< Remapping scheme to use
-  real,    intent(in)  :: xL, xR   !< Left/right edges of target cell
-  real,    intent(in)  :: hC       !< Cell width hC = xR - xL
-  real,    intent(out) :: uAve     !< Average value on target cell
-  integer, intent(inout) :: jStart !< The index of the cell to start searching from
+subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefs, method, &
+                                     xL, xR, hC, uAve, jStart, xStart, h_neglect )
+  integer,              intent(in)    :: n0     !< Number of cells in source grid
+  real, dimension(:),   intent(in)    :: h0     !< Source grid sizes (size n0)
+  real, dimension(:),   intent(in)    :: u0     !< Source cell averages
+  real, dimension(:,:), intent(in)    :: ppoly0_E !< Edge value of polynomial
+  real, dimension(:,:), intent(in)    :: ppoly0_coefs !< Coefficients of polynomial
+  integer,              intent(in)    :: method !< Remapping scheme to use
+  real,                 intent(in)    :: xL     !< Left edges of target cell
+  real,                 intent(in)    :: xR     !< Right edges of target cell
+  real,                 intent(in)    :: hC     !< Cell width hC = xR - xL
+  real,                 intent(out)   :: uAve   !< Average value on target cell
+  integer,              intent(inout) :: jStart !< The index of the cell to start searching from
                                    !< On exit, contains index of last cell used
-  real,    intent(inout) :: xStart !< The left edge position of cell jStart
+  real,                 intent(inout) :: xStart !< The left edge position of cell jStart
                                    !< On first entry should be 0.
+  real,       optional, intent(in)    :: h_neglect !< A negligibly small width for the
+                                          !! purpose of cell reconstructions
+                                          !! in the same units as h.
   ! Local variables
   integer :: j, k
   integer :: jL, jR       ! indexes of source cells containing target
@@ -1187,7 +1253,10 @@ subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, 
   real    :: hAct         ! The distance actually used in the integration
                           ! (notionally xR - xL) which differs due to roundoff.
   real    :: x0_2, x1_2, x02px12, x0px1 ! Used in evaluation of integrated polynomials
+  real     :: hNeglect    ! A negligible thicness in the same units as h.
   real, parameter :: r_3 = 1.0/3.0 ! Used in evaluation of integrated polynomials
+
+  hNeglect = hNeglect_dflt ; if (present(h_neglect)) hNeglect = h_neglect
 
   q = -1.E30
   x0jLl = -1.E30
@@ -1240,29 +1309,29 @@ subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, 
       uAve = 0.5 * ( ppoly0_E(jL,1) + ppoly0_E(jL,2) )
     else
       ! WHY IS THIS NOT WRITTEN AS xi0 = ( xL - x0jLl ) / h0(jL) ---AJA
-      xi0 = xL / ( h0(jL) + h_neglect ) - x0jLl / ( h0(jL) + h_neglect )
+      xi0 = xL / ( h0(jL) + hNeglect ) - x0jLl / ( h0(jL) + hNeglect )
 
       select case ( method )
         case ( INTEGRATION_PCM )
-          uAve =         ppoly0_coefficients(jL,1)
+          uAve =         ppoly0_coefs(jL,1)
         case ( INTEGRATION_PLM )
-          uAve =         ppoly0_coefficients(jL,1)   &
-               + xi0 *   ppoly0_coefficients(jL,2)
+          uAve =         ppoly0_coefs(jL,1)   &
+               + xi0 *   ppoly0_coefs(jL,2)
         case ( INTEGRATION_PPM )
-          uAve =         ppoly0_coefficients(jL,1)   &
-               + xi0 * ( ppoly0_coefficients(jL,2)   &
-               + xi0 *   ppoly0_coefficients(jL,3) )
+          uAve =         ppoly0_coefs(jL,1)   &
+               + xi0 * ( ppoly0_coefs(jL,2)   &
+               + xi0 *   ppoly0_coefs(jL,3) )
         case ( INTEGRATION_PQM )
-          uAve =         ppoly0_coefficients(jL,1)   &
-               + xi0 * ( ppoly0_coefficients(jL,2)   &
-               + xi0 * ( ppoly0_coefficients(jL,3)   &
-               + xi0 * ( ppoly0_coefficients(jL,4)   &
-               + xi0 *   ppoly0_coefficients(jL,5) ) ) )
+          uAve =         ppoly0_coefs(jL,1)   &
+               + xi0 * ( ppoly0_coefs(jL,2)   &
+               + xi0 * ( ppoly0_coefs(jL,3)   &
+               + xi0 * ( ppoly0_coefs(jL,4)   &
+               + xi0 *   ppoly0_coefs(jL,5) ) ) )
         case default
           call MOM_error( FATAL,'The selected integration method is invalid' )
       end select
 
-    end if ! end checking whether source cell is vanished
+    endif ! end checking whether source cell is vanished
 
   ! 2. Cell is not vanished
   else
@@ -1299,11 +1368,11 @@ subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, 
       !
       ! Determine normalized coordinates
 #ifdef __USE_ROUNDOFF_SAFE_ADJUSTMENTS__
-      xi0 = max( 0., min( 1., ( xL - x0jLl ) / ( h0(jL) + h_neglect ) ) )
-      xi1 = max( 0., min( 1., ( xR - x0jLl ) / ( h0(jL) + h_neglect ) ) )
+      xi0 = max( 0., min( 1., ( xL - x0jLl ) / ( h0(jL) + hNeglect ) ) )
+      xi1 = max( 0., min( 1., ( xR - x0jLl ) / ( h0(jL) + hNeglect ) ) )
 #else
-      xi0 = xL / h0(jL) - x0jLl / ( h0(jL) + h_neglect )
-      xi1 = xR / h0(jL) - x0jLl / ( h0(jL) + h_neglect )
+      xi0 = xL / h0(jL) - x0jLl / ( h0(jL) + hNeglect )
+      xi1 = xR / h0(jL) - x0jLl / ( h0(jL) + hNeglect )
 #endif
 
       hAct = h0(jL) * ( xi1 - xi0 )
@@ -1313,27 +1382,27 @@ subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, 
       ! coordinates, hence: \int_xL^xR p(x) dx = h \int_xi0^xi1 p(xi) dxi
       select case ( method )
         case ( INTEGRATION_PCM )
-          q = ( xR - xL ) * ppoly0_coefficients(jL,1)
+          q = ( xR - xL ) * ppoly0_coefs(jL,1)
         case ( INTEGRATION_PLM )
-          q = ( xR - xL ) * (                                 &
-              ppoly0_coefficients(jL,1)                       &
-            + ppoly0_coefficients(jL,2) * 0.5 * ( xi1 + xi0 ) )
+          q = ( xR - xL ) * (                            &
+              ppoly0_coefs(jL,1)                         &
+            + ppoly0_coefs(jL,2) * 0.5 * ( xi1 + xi0 ) )
         case ( INTEGRATION_PPM )
-          q = ( xR - xL ) * (                                   &
-                ppoly0_coefficients(jL,1)                       &
-            + ( ppoly0_coefficients(jL,2) * 0.5 * ( xi1 + xi0 ) &
-            +   ppoly0_coefficients(jL,3) * r_3 * ( ( xi1*xi1 + xi0*xi0 ) + xi0*xi1 ) ) )
+          q = ( xR - xL ) * (                            &
+                ppoly0_coefs(jL,1)                       &
+            + ( ppoly0_coefs(jL,2) * 0.5 * ( xi1 + xi0 ) &
+            +   ppoly0_coefs(jL,3) * r_3 * ( ( xi1*xi1 + xi0*xi0 ) + xi0*xi1 ) ) )
         case ( INTEGRATION_PQM )
           x0_2 = xi0*xi0
           x1_2 = xi1*xi1
           x02px12 = x0_2 + x1_2
           x0px1 = xi1 + xi0
-          q = ( xR - xL ) * (                                                                     &
-                ppoly0_coefficients(jL,1)                                                         &
-            + ( ppoly0_coefficients(jL,2) * 0.5 * ( xi1 + xi0 )                                   &
-            + ( ppoly0_coefficients(jL,3) * r_3 * ( x02px12 + xi0*xi1 )                           &
-            +   ppoly0_coefficients(jL,4) * 0.25* ( x02px12 * x0px1 )                             &
-            +   ppoly0_coefficients(jL,5) * 0.2 * ( ( xi1*x1_2 + xi0*x0_2 ) * x0px1 + x0_2*x1_2 ) ) ) )
+          q = ( xR - xL ) * (                                    &
+                ppoly0_coefs(jL,1)                               &
+            + ( ppoly0_coefs(jL,2) * 0.5 * ( xi1 + xi0 )         &
+            + ( ppoly0_coefs(jL,3) * r_3 * ( x02px12 + xi0*xi1 ) &
+            +   ppoly0_coefs(jL,4) * 0.25* ( x02px12 * x0px1 )   &
+            +   ppoly0_coefs(jL,5) * 0.2 * ( ( xi1*x1_2 + xi0*x0_2 ) * x0px1 + x0_2*x1_2 ) ) ) )
         case default
           call MOM_error( FATAL,'The selected integration method is invalid' )
       end select
@@ -1355,9 +1424,9 @@ subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, 
 
       ! Integrate from xL up to right boundary of cell jL
 #ifdef __USE_ROUNDOFF_SAFE_ADJUSTMENTS__
-      xi0 = max( 0., min( 1., ( xL - x0jLl ) / ( h0(jL) + h_neglect ) ) )
+      xi0 = max( 0., min( 1., ( xL - x0jLl ) / ( h0(jL) + hNeglect ) ) )
 #else
-      xi0 = (xL - x0jLl) / ( h0(jL) + h_neglect )
+      xi0 = (xL - x0jLl) / ( h0(jL) + hNeglect )
 #endif
       xi1 = 1.0
 
@@ -1365,27 +1434,27 @@ subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, 
 
       select case ( method )
         case ( INTEGRATION_PCM )
-          q = q + ( x0jLr - xL ) * ppoly0_coefficients(jL,1)
+          q = q + ( x0jLr - xL ) * ppoly0_coefs(jL,1)
         case ( INTEGRATION_PLM )
-          q = q + ( x0jLr - xL ) * (                          &
-              ppoly0_coefficients(jL,1)                       &
-            + ppoly0_coefficients(jL,2) * 0.5 * ( xi1 + xi0 ) )
+          q = q + ( x0jLr - xL ) * (                     &
+              ppoly0_coefs(jL,1)                         &
+            + ppoly0_coefs(jL,2) * 0.5 * ( xi1 + xi0 ) )
         case ( INTEGRATION_PPM )
-          q = q + ( x0jLr - xL ) * (                            &
-                ppoly0_coefficients(jL,1)                       &
-            + ( ppoly0_coefficients(jL,2) * 0.5 * ( xi1 + xi0 ) &
-            +   ppoly0_coefficients(jL,3) * r_3 * ( ( xi1*xi1 + xi0*xi0 ) + xi0*xi1 ) ) )
+          q = q + ( x0jLr - xL ) * (                     &
+                ppoly0_coefs(jL,1)                       &
+            + ( ppoly0_coefs(jL,2) * 0.5 * ( xi1 + xi0 ) &
+            +   ppoly0_coefs(jL,3) * r_3 * ( ( xi1*xi1 + xi0*xi0 ) + xi0*xi1 ) ) )
         case ( INTEGRATION_PQM )
           x0_2 = xi0*xi0
           x1_2 = xi1*xi1
           x02px12 = x0_2 + x1_2
           x0px1 = xi1 + xi0
-          q = q + ( x0jLr - xL ) * (                                                              &
-                ppoly0_coefficients(jL,1)                                                         &
-            + ( ppoly0_coefficients(jL,2) * 0.5 * ( xi1 + xi0 )                                   &
-            + ( ppoly0_coefficients(jL,3) * r_3 * ( x02px12 + xi0*xi1 )                           &
-            +   ppoly0_coefficients(jL,4) * 0.25* ( x02px12 * x0px1 )                             &
-            +   ppoly0_coefficients(jL,5) * 0.2 * ( ( xi1*x1_2 + xi0*x0_2 ) * x0px1 + x0_2*x1_2 ) ) ) )
+          q = q + ( x0jLr - xL ) * (                             &
+                ppoly0_coefs(jL,1)                               &
+            + ( ppoly0_coefs(jL,2) * 0.5 * ( xi1 + xi0 )         &
+            + ( ppoly0_coefs(jL,3) * r_3 * ( x02px12 + xi0*xi1 ) &
+            +   ppoly0_coefs(jL,4) * 0.25* ( x02px12 * x0px1 )   &
+            +   ppoly0_coefs(jL,5) * 0.2 * ( ( xi1*x1_2 + xi0*x0_2 ) * x0px1 + x0_2*x1_2 ) ) ) )
         case default
           call MOM_error( FATAL, 'The selected integration method is invalid' )
       end select
@@ -1395,52 +1464,52 @@ subroutine integrateReconOnInterval( n0, h0, u0, ppoly0_E, ppoly0_coefficients, 
         do k = jL+1,jR-1
           q = q + h0(k) * u0(k)
           hAct = hAct + h0(k)
-        end do
-      end if
+        enddo
+      endif
 
       ! Integrate from left boundary of cell jR up to xR
       xi0 = 0.0
 #ifdef __USE_ROUNDOFF_SAFE_ADJUSTMENTS__
-      xi1 = max( 0., min( 1., ( xR - x0jRl ) / ( h0(jR) + h_neglect ) ) )
+      xi1 = max( 0., min( 1., ( xR - x0jRl ) / ( h0(jR) + hNeglect ) ) )
 #else
-      xi1 = (xR - x0jRl) / ( h0(jR) + h_neglect )
+      xi1 = (xR - x0jRl) / ( h0(jR) + hNeglect )
 #endif
 
       hAct = hAct + h0(jR) * ( xi1 - xi0 )
 
       select case ( method )
         case ( INTEGRATION_PCM )
-          q = q + ( xR - x0jRl ) * ppoly0_coefficients(jR,1)
+          q = q + ( xR - x0jRl ) * ppoly0_coefs(jR,1)
         case ( INTEGRATION_PLM )
-          q = q + ( xR - x0jRl ) * (                          &
-              ppoly0_coefficients(jR,1)                       &
-            + ppoly0_coefficients(jR,2) * 0.5 * ( xi1 + xi0 ) )
+          q = q + ( xR - x0jRl ) * (                     &
+              ppoly0_coefs(jR,1)                         &
+            + ppoly0_coefs(jR,2) * 0.5 * ( xi1 + xi0 ) )
         case ( INTEGRATION_PPM )
-          q = q + ( xR - x0jRl ) * (                            &
-                ppoly0_coefficients(jR,1)                       &
-            + ( ppoly0_coefficients(jR,2) * 0.5 * ( xi1 + xi0 ) &
-            +   ppoly0_coefficients(jR,3) * r_3 * ( ( xi1*xi1 + xi0*xi0 ) + xi0*xi1 ) ) )
+          q = q + ( xR - x0jRl ) * (                     &
+                ppoly0_coefs(jR,1)                       &
+            + ( ppoly0_coefs(jR,2) * 0.5 * ( xi1 + xi0 ) &
+            +   ppoly0_coefs(jR,3) * r_3 * ( ( xi1*xi1 + xi0*xi0 ) + xi0*xi1 ) ) )
         case ( INTEGRATION_PQM )
           x0_2 = xi0*xi0
           x1_2 = xi1*xi1
           x02px12 = x0_2 + x1_2
           x0px1 = xi1 + xi0
-          q = q + ( xR - x0jRl ) * (                                                              &
-                ppoly0_coefficients(jR,1)                                                         &
-            + ( ppoly0_coefficients(jR,2) * 0.5 * ( xi1 + xi0 )                                   &
-            + ( ppoly0_coefficients(jR,3) * r_3 * ( x02px12 + xi0*xi1 )                           &
-            +   ppoly0_coefficients(jR,4) * 0.25* ( x02px12 * x0px1 )                             &
-            +   ppoly0_coefficients(jR,5) * 0.2 * ( ( xi1*x1_2 + xi0*x0_2 ) * x0px1 + x0_2*x1_2 ) ) ) )
+          q = q + ( xR - x0jRl ) * (                             &
+                ppoly0_coefs(jR,1)                               &
+            + ( ppoly0_coefs(jR,2) * 0.5 * ( xi1 + xi0 )         &
+            + ( ppoly0_coefs(jR,3) * r_3 * ( x02px12 + xi0*xi1 ) &
+            +   ppoly0_coefs(jR,4) * 0.25* ( x02px12 * x0px1 )   &
+            +   ppoly0_coefs(jR,5) * 0.2 * ( ( xi1*x1_2 + xi0*x0_2 ) * x0px1 + x0_2*x1_2 ) ) ) )
         case default
           call MOM_error( FATAL,'The selected integration method is invalid' )
       end select
 
-    end if ! end integration for non-vanished cells
+    endif ! end integration for non-vanished cells
 
     ! The cell average is the integrated value divided by the cell width
 #ifdef __USE_ROUNDOFF_SAFE_ADJUSTMENTS__
 if (hAct==0.) then
-    uAve = ppoly0_coefficients(jL,1)
+    uAve = ppoly0_coefs(jL,1)
 else
     uAve = q / hAct
 endif
@@ -1448,7 +1517,7 @@ endif
     uAve = q / hC
 #endif
 
-  end if ! end if clause to check if cell is vanished
+  endif ! endif clause to check if cell is vanished
 
 end subroutine integrateReconOnInterval
 
@@ -1478,7 +1547,7 @@ end subroutine dzFromH1H2
 
 !> Constructor for remapping control structure
 subroutine initialize_remapping( CS, remapping_scheme, boundary_extrapolation, &
-                check_reconstruction, check_remapping, force_bounds_in_subcell)
+                check_reconstruction, check_remapping, force_bounds_in_subcell, answers_2018)
   ! Arguments
   type(remapping_CS), intent(inout) :: CS !< Remapping control structure
   character(len=*),   intent(in)    :: remapping_scheme !< Remapping scheme to use
@@ -1486,11 +1555,12 @@ subroutine initialize_remapping( CS, remapping_scheme, boundary_extrapolation, &
   logical, optional,  intent(in)    :: check_reconstruction !< Indicate to check reconstructions
   logical, optional,  intent(in)    :: check_remapping !< Indicate to check results of remapping
   logical, optional,  intent(in)    :: force_bounds_in_subcell !< Force subcells values to be bounded
+  logical, optional,  intent(in)    :: answers_2018 !< If true use older, less acccurate expressions.
 
-  ! Note that remapping_scheme is mandatory fir initialize_remapping()
+  ! Note that remapping_scheme is mandatory for initialize_remapping()
   call remapping_set_param(CS, remapping_scheme=remapping_scheme, boundary_extrapolation=boundary_extrapolation,  &
                check_reconstruction=check_reconstruction, check_remapping=check_remapping, &
-               force_bounds_in_subcell=force_bounds_in_subcell)
+               force_bounds_in_subcell=force_bounds_in_subcell, answers_2018=answers_2018)
 
 end subroutine initialize_remapping
 
@@ -1555,12 +1625,16 @@ logical function remapping_unit_tests(verbose)
   data h1 /3*1./   ! 3 uniform layers with total depth of 3
   data h2 /6*0.5/  ! 6 uniform layers with total depth of 3
   type(remapping_CS) :: CS !< Remapping control structure
-  real, allocatable, dimension(:,:) :: ppoly0_E, ppoly0_S, ppoly0_coefficients
+  real, allocatable, dimension(:,:) :: ppoly0_E, ppoly0_S, ppoly0_coefs
+  logical :: answers_2018 !  If true use older, less acccurate expressions.
   integer :: i
-  real :: err
+  real :: err, h_neglect, h_neglect_edge
   logical :: thisTest, v
 
   v = verbose
+  answers_2018 = .false. ! .true.
+  h_neglect = hNeglect_dflt
+  h_neglect_edge = hNeglect_dflt ; if (answers_2018) h_neglect_edge = 1.0e-10
 
   write(*,*) '==== MOM_remapping: remapping_unit_tests ================='
   remapping_unit_tests = .false. ! Normally return false
@@ -1582,12 +1656,12 @@ logical function remapping_unit_tests(verbose)
   remapping_unit_tests = remapping_unit_tests .or. thisTest
 
   thisTest = .false.
-  call initialize_remapping(CS, 'PPM_H4')
+  call initialize_remapping(CS, 'PPM_H4', answers_2018=answers_2018)
   if (verbose) write(*,*) 'h0 (test data)'
   if (verbose) call dumpGrid(n0,h0,x0,u0)
 
   call dzFromH1H2( n0, h0, n1, h1, dx1 )
-  call remapping_core_w( CS, n0, h0, u0, n1, dx1, u1 )
+  call remapping_core_w( CS, n0, h0, u0, n1, dx1, u1, h_neglect, h_neglect_edge)
   do i=1,n1
     err=u1(i)-8.*(0.5*real(1+n1)-real(i))
     if (abs(err)>real(n1-1)*epsilon(err)) thisTest = .true.
@@ -1600,18 +1674,18 @@ logical function remapping_unit_tests(verbose)
   thisTest = .false.
   allocate(ppoly0_E(n0,2))
   allocate(ppoly0_S(n0,2))
-  allocate(ppoly0_coefficients(n0,CS%degree+1))
+  allocate(ppoly0_coefs(n0,CS%degree+1))
 
   ppoly0_E(:,:) = 0.0
   ppoly0_S(:,:) = 0.0
-  ppoly0_coefficients(:,:) = 0.0
+  ppoly0_coefs(:,:) = 0.0
 
-  call edge_values_explicit_h4( n0, h0, u0, ppoly0_E )
-  call PPM_reconstruction( n0, h0, u0, ppoly0_E, ppoly0_coefficients )
-  call PPM_boundary_extrapolation( n0, h0, u0, ppoly0_E, ppoly0_coefficients )
+  call edge_values_explicit_h4( n0, h0, u0, ppoly0_E, h_neglect=1e-10, answers_2018=answers_2018 )
+  call PPM_reconstruction( n0, h0, u0, ppoly0_E, ppoly0_coefs, h_neglect, answers_2018=answers_2018 )
+  call PPM_boundary_extrapolation( n0, h0, u0, ppoly0_E, ppoly0_coefs, h_neglect )
   u1(:) = 0.
-  call remapByProjection( n0, h0, u0, ppoly0_E, ppoly0_coefficients, &
-                          n1, h1, INTEGRATION_PPM, u1 )
+  call remapByProjection( n0, h0, u0, ppoly0_E, ppoly0_coefs, &
+                          n1, h1, INTEGRATION_PPM, u1, h_neglect )
   do i=1,n1
     err=u1(i)-8.*(0.5*real(1+n1)-real(i))
     if (abs(err)>2.*epsilon(err)) thisTest = .true.
@@ -1621,9 +1695,9 @@ logical function remapping_unit_tests(verbose)
 
   thisTest = .false.
   u1(:) = 0.
-  call remapByDeltaZ( n0, h0, u0, ppoly0_E, ppoly0_coefficients, &
+  call remapByDeltaZ( n0, h0, u0, ppoly0_E, ppoly0_coefs, &
                       n1, x1-x0(1:n1+1), &
-                      INTEGRATION_PPM, u1, hn1 )
+                      INTEGRATION_PPM, u1, hn1, h_neglect )
   if (verbose) write(*,*) 'h1 (by delta)'
   if (verbose) call dumpGrid(n1,h1,x1,u1)
   hn1=hn1-h1
@@ -1638,9 +1712,9 @@ logical function remapping_unit_tests(verbose)
   call buildGridFromH(n2, h2, x2)
   dx2(1:n0+1) = x2(1:n0+1) - x0
   dx2(n0+2:n2+1) = x2(n0+2:n2+1) - x0(n0+1)
-  call remapByDeltaZ( n0, h0, u0, ppoly0_E, ppoly0_coefficients, &
+  call remapByDeltaZ( n0, h0, u0, ppoly0_E, ppoly0_coefs, &
                       n2, dx2, &
-                      INTEGRATION_PPM, u2, hn2 )
+                      INTEGRATION_PPM, u2, hn2, h_neglect )
   if (verbose) write(*,*) 'h2'
   if (verbose) call dumpGrid(n2,h2,x2,u2)
   if (verbose) write(*,*) 'hn2'
@@ -1655,7 +1729,7 @@ logical function remapping_unit_tests(verbose)
 
   if (verbose) write(*,*) 'Via sub-cells'
   thisTest = .false.
-  call remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefficients, &
+  call remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefs, &
                             n2, h2, INTEGRATION_PPM, .false., u2, err )
   if (verbose) call dumpGrid(n2,h2,x2,u2)
 
@@ -1666,11 +1740,11 @@ logical function remapping_unit_tests(verbose)
   if (thisTest) write(*,*) 'remapping_unit_tests: Failed remap_via_sub_cells() 2'
   remapping_unit_tests = remapping_unit_tests .or. thisTest
 
-  call remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefficients, &
+  call remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefs, &
                             6, (/.125,.125,.125,.125,.125,.125/), INTEGRATION_PPM, .false., u2, err )
   if (verbose) call dumpGrid(6,h2,x2,u2)
 
-  call remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefficients, &
+  call remap_via_sub_cells( n0, h0, u0, ppoly0_E, ppoly0_coefs, &
                             3, (/2.25,1.5,1./), INTEGRATION_PPM, .false., u2, err )
   if (verbose) call dumpGrid(3,h2,x2,u2)
 
@@ -1678,105 +1752,162 @@ logical function remapping_unit_tests(verbose)
 
   write(*,*) '===== MOM_remapping: new remapping_unit_tests =================='
 
-  deallocate(ppoly0_E, ppoly0_S, ppoly0_coefficients)
-  allocate(ppoly0_coefficients(5,6))
+  deallocate(ppoly0_E, ppoly0_S, ppoly0_coefs)
+  allocate(ppoly0_coefs(5,6))
   allocate(ppoly0_E(5,2))
   allocate(ppoly0_S(5,2))
 
-  call PCM_reconstruction(3, (/1.,2.,4./), ppoly0_E(1:3,:), ppoly0_coefficients(1:3,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,1), (/1.,2.,4./), 'PCM: left edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,2), (/1.,2.,4./), 'PCM: right edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,1), (/1.,2.,4./), 'PCM: P0')
+  call PCM_reconstruction(3, (/1.,2.,4./), ppoly0_E(1:3,:), &
+                          ppoly0_coefs(1:3,:) )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,1), (/1.,2.,4./), 'PCM: left edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,2), (/1.,2.,4./), 'PCM: right edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,1), (/1.,2.,4./), 'PCM: P0')
 
-  call PLM_reconstruction(3, (/1.,1.,1./), (/1.,3.,5./), ppoly0_E(1:3,:), ppoly0_coefficients(1:3,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,1), (/1.,2.,5./), 'Unlim PLM: left edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,2), (/1.,4.,5./), 'Unlim PLM: right edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,1), (/1.,2.,5./), 'Unlim PLM: P0')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,2), (/0.,2.,0./), 'Unlim PLM: P1')
+  call PLM_reconstruction(3, (/1.,1.,1./), (/1.,3.,5./), ppoly0_E(1:3,:), &
+                          ppoly0_coefs(1:3,:), h_neglect )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,1), (/1.,2.,5./), 'Unlim PLM: left edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,2), (/1.,4.,5./), 'Unlim PLM: right edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,1), (/1.,2.,5./), 'Unlim PLM: P0')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,2), (/0.,2.,0./), 'Unlim PLM: P1')
 
-  call PLM_reconstruction(3, (/1.,1.,1./), (/1.,2.,7./), ppoly0_E(1:3,:), ppoly0_coefficients(1:3,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,1), (/1.,1.,7./), 'Left lim PLM: left edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,2), (/1.,3.,7./), 'Left lim PLM: right edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,1), (/1.,1.,7./), 'Left lim PLM: P0')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,2), (/0.,2.,0./), 'Left lim PLM: P1')
+  call PLM_reconstruction(3, (/1.,1.,1./), (/1.,2.,7./), ppoly0_E(1:3,:), &
+                          ppoly0_coefs(1:3,:), h_neglect )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,1), (/1.,1.,7./), 'Left lim PLM: left edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,2), (/1.,3.,7./), 'Left lim PLM: right edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,1), (/1.,1.,7./), 'Left lim PLM: P0')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,2), (/0.,2.,0./), 'Left lim PLM: P1')
 
-  call PLM_reconstruction(3, (/1.,1.,1./), (/1.,6.,7./), ppoly0_E(1:3,:), ppoly0_coefficients(1:3,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,1), (/1.,5.,7./), 'Right lim PLM: left edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,2), (/1.,7.,7./), 'Right lim PLM: right edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,1), (/1.,5.,7./), 'Right lim PLM: P0')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,2), (/0.,2.,0./), 'Right lim PLM: P1')
+  call PLM_reconstruction(3, (/1.,1.,1./), (/1.,6.,7./), ppoly0_E(1:3,:), &
+                          ppoly0_coefs(1:3,:), h_neglect )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,1), (/1.,5.,7./), 'Right lim PLM: left edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,2), (/1.,7.,7./), 'Right lim PLM: right edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,1), (/1.,5.,7./), 'Right lim PLM: P0')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,2), (/0.,2.,0./), 'Right lim PLM: P1')
 
-  call PLM_reconstruction(3, (/1.,2.,3./), (/1.,4.,9./), ppoly0_E(1:3,:), ppoly0_coefficients(1:3,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,1), (/1.,2.,9./), 'Non-uniform line PLM: left edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_E(:,2), (/1.,6.,9./), 'Non-uniform line PLM: right edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,1), (/1.,2.,9./), 'Non-uniform line PLM: P0')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 3, ppoly0_coefficients(:,2), (/0.,4.,0./), 'Non-uniform line PLM: P1')
+  call PLM_reconstruction(3, (/1.,2.,3./), (/1.,4.,9./), ppoly0_E(1:3,:), &
+                          ppoly0_coefs(1:3,:), h_neglect )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,1), (/1.,2.,9./), 'Non-uniform line PLM: left edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_E(:,2), (/1.,6.,9./), 'Non-uniform line PLM: right edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,1), (/1.,2.,9./), 'Non-uniform line PLM: P0')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 3, ppoly0_coefs(:,2), (/0.,4.,0./), 'Non-uniform line PLM: P1')
 
-  call edge_values_explicit_h4( 5, (/1.,1.,1.,1.,1./), (/1.,3.,5.,7.,9./), ppoly0_E )
-  thisTest = test_answer(v, 5, ppoly0_E(:,1), (/0.,2.,4.,6.,8./), 'Line H4: left edges') ! Currently fails due to roundoff
-  thisTest = test_answer(v, 5, ppoly0_E(:,2), (/2.,4.,6.,8.,10./), 'Line H4: right edges') ! Currently fails due to roundoff
+  call edge_values_explicit_h4( 5, (/1.,1.,1.,1.,1./), (/1.,3.,5.,7.,9./), ppoly0_E, &
+                                h_neglect=1e-10, answers_2018=answers_2018 )
+  ! The next two tests currently fail due to roundoff, but pass when given a reasonable tolerance.
+  thisTest = test_answer(v, 5, ppoly0_E(:,1), (/0.,2.,4.,6.,8./), 'Line H4: left edges', tol=8.0e-15)
+  remapping_unit_tests = remapping_unit_tests .or. thisTest
+  thisTest = test_answer(v, 5, ppoly0_E(:,2), (/2.,4.,6.,8.,10./), 'Line H4: right edges', tol=1.0e-14)
+  remapping_unit_tests = remapping_unit_tests .or. thisTest
   ppoly0_E(:,1) = (/0.,2.,4.,6.,8./)
   ppoly0_E(:,2) = (/2.,4.,6.,8.,10./)
-  call PPM_reconstruction(5, (/1.,1.,1.,1.,1./), (/1.,3.,5.,7.,9./), ppoly0_E(1:5,:), ppoly0_coefficients(1:5,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,1), (/1.,2.,4.,6.,9./), 'Line PPM: P0')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,2), (/0.,2.,2.,2.,0./), 'Line PPM: P1')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,3), (/0.,0.,0.,0.,0./), 'Line PPM: P2')
+  call PPM_reconstruction(5, (/1.,1.,1.,1.,1./), (/1.,3.,5.,7.,9./), ppoly0_E(1:5,:), &
+                              ppoly0_coefs(1:5,:), h_neglect, answers_2018=answers_2018 )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,1), (/1.,2.,4.,6.,9./), 'Line PPM: P0')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,2), (/0.,2.,2.,2.,0./), 'Line PPM: P1')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,3), (/0.,0.,0.,0.,0./), 'Line PPM: P2')
 
-  call edge_values_explicit_h4( 5, (/1.,1.,1.,1.,1./), (/1.,1.,7.,19.,37./), ppoly0_E )
-  thisTest = test_answer(v, 5, ppoly0_E(:,1), (/3.,0.,3.,12.,27./), 'Parabola H4: left edges') ! Currently fails due to roundoff
-  thisTest = test_answer(v, 5, ppoly0_E(:,2), (/0.,3.,12.,27.,48./), 'Parabola H4: right edges') ! Currently fails due to roundoff
+  call edge_values_explicit_h4( 5, (/1.,1.,1.,1.,1./), (/1.,1.,7.,19.,37./), ppoly0_E, &
+                                h_neglect=1e-10, answers_2018=answers_2018 )
+  ! The next two tests are now passing when answers_2018 = .false., but otherwise only work to roundoff.
+  thisTest = test_answer(v, 5, ppoly0_E(:,1), (/3.,0.,3.,12.,27./), 'Parabola H4: left edges', tol=2.7e-14)
+  remapping_unit_tests = remapping_unit_tests .or. thisTest
+  thisTest = test_answer(v, 5, ppoly0_E(:,2), (/0.,3.,12.,27.,48./), 'Parabola H4: right edges', tol=4.8e-14)
+  remapping_unit_tests = remapping_unit_tests .or. thisTest
   ppoly0_E(:,1) = (/0.,0.,3.,12.,27./)
   ppoly0_E(:,2) = (/0.,3.,12.,27.,48./)
-  call PPM_reconstruction(5, (/1.,1.,1.,1.,1./), (/0.,1.,7.,19.,37./), ppoly0_E(1:5,:), ppoly0_coefficients(1:5,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_E(:,1), (/0.,0.,3.,12.,37./), 'Parabola PPM: left edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_E(:,2), (/0.,3.,12.,27.,37./), 'Parabola PPM: right edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,1), (/0.,0.,3.,12.,37./), 'Parabola PPM: P0')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,2), (/0.,0.,6.,12.,0./), 'Parabola PPM: P1')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,3), (/0.,3.,3.,3.,0./), 'Parabola PPM: P2')
+  call PPM_reconstruction(5, (/1.,1.,1.,1.,1./), (/0.,1.,7.,19.,37./), ppoly0_E(1:5,:), &
+                          ppoly0_coefs(1:5,:), h_neglect, answers_2018=answers_2018 )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_E(:,1), (/0.,0.,3.,12.,37./), 'Parabola PPM: left edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_E(:,2), (/0.,3.,12.,27.,37./), 'Parabola PPM: right edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,1), (/0.,0.,3.,12.,37./), 'Parabola PPM: P0')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,2), (/0.,0.,6.,12.,0./), 'Parabola PPM: P1')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,3), (/0.,3.,3.,3.,0./), 'Parabola PPM: P2')
 
   ppoly0_E(:,1) = (/0.,0.,6.,10.,15./)
   ppoly0_E(:,2) = (/0.,6.,12.,17.,15./)
-  call PPM_reconstruction(5, (/1.,1.,1.,1.,1./), (/0.,5.,7.,16.,15./), ppoly0_E(1:5,:), ppoly0_coefficients(1:5,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_E(:,1), (/0.,3.,6.,16.,15./), 'Limits PPM: left edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_E(:,2), (/0.,6.,9.,16.,15./), 'Limits PPM: right edges')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,1), (/0.,3.,6.,16.,15./), 'Limits PPM: P0')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,2), (/0.,6.,0.,0.,0./), 'Limits PPM: P1')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 5, ppoly0_coefficients(:,3), (/0.,-3.,3.,0.,0./), 'Limits PPM: P2')
+  call PPM_reconstruction(5, (/1.,1.,1.,1.,1./), (/0.,5.,7.,16.,15./), ppoly0_E(1:5,:), &
+                          ppoly0_coefs(1:5,:), h_neglect, answers_2018=answers_2018 )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_E(:,1), (/0.,3.,6.,16.,15./), 'Limits PPM: left edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_E(:,2), (/0.,6.,9.,16.,15./), 'Limits PPM: right edges')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,1), (/0.,3.,6.,16.,15./), 'Limits PPM: P0')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,2), (/0.,6.,0.,0.,0./), 'Limits PPM: P1')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 5, ppoly0_coefs(:,3), (/0.,-3.,3.,0.,0./), 'Limits PPM: P2')
 
-  call PLM_reconstruction(4, (/0.,1.,1.,0./), (/5.,4.,2.,1./), ppoly0_E(1:4,:), ppoly0_coefficients(1:4,:) )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 4, ppoly0_E(1:4,1), (/5.,5.,3.,1./), 'PPM: left edges h=0110')
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 4, ppoly0_E(1:4,2), (/5.,3.,1.,1./), 'PPM: right edges h=0110')
-  call remap_via_sub_cells( 4, (/0.,1.,1.,0./), (/5.,4.,2.,1./), ppoly0_E(1:4,:), ppoly0_coefficients(1:4,:), &
+  call PLM_reconstruction(4, (/0.,1.,1.,0./), (/5.,4.,2.,1./), ppoly0_E(1:4,:), &
+                          ppoly0_coefs(1:4,:), h_neglect )
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 4, ppoly0_E(1:4,1), (/5.,5.,3.,1./), 'PPM: left edges h=0110')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 4, ppoly0_E(1:4,2), (/5.,3.,1.,1./), 'PPM: right edges h=0110')
+  call remap_via_sub_cells( 4, (/0.,1.,1.,0./), (/5.,4.,2.,1./), ppoly0_E(1:4,:), &
+                            ppoly0_coefs(1:4,:), &
                             2, (/1.,1./), INTEGRATION_PLM, .false., u2, err )
-  remapping_unit_tests = remapping_unit_tests .or. test_answer(v, 2, u2, (/4.,2./), 'PLM: remapped  h=0110->h=11')
+  remapping_unit_tests = remapping_unit_tests .or. &
+    test_answer(v, 2, u2, (/4.,2./), 'PLM: remapped  h=0110->h=11')
 
-  deallocate(ppoly0_E, ppoly0_S, ppoly0_coefficients)
+  deallocate(ppoly0_E, ppoly0_S, ppoly0_coefs)
 
   if (.not. remapping_unit_tests) write(*,*) 'Pass'
 
 end function remapping_unit_tests
 
 !> Returns true if any cell of u and u_true are not identical. Returns false otherwise.
-logical function test_answer(verbose, n, u, u_true, label)
+logical function test_answer(verbose, n, u, u_true, label, tol)
   logical,            intent(in) :: verbose !< If true, write results to stdout
-  integer,            intent(in) :: n !< Number of cells in u
-  real, dimension(n), intent(in) :: u !< Values to test
+  integer,            intent(in) :: n      !< Number of cells in u
+  real, dimension(n), intent(in) :: u      !< Values to test
   real, dimension(n), intent(in) :: u_true !< Values to test against (correct answer)
-  character(len=*),   intent(in) :: label !< Message
+  character(len=*),   intent(in) :: label  !< Message
+  real,     optional, intent(in) :: tol    !< The tolerance for differences between u and u_true
   ! Local variables
+  real :: tolerance ! The tolerance for differences between u and u_true
   integer :: k
 
+  tolerance = 0.0 ; if (present(tol)) tolerance = tol
   test_answer = .false.
   do k = 1, n
-    if (u(k) /= u_true(k)) test_answer = .true.
+    if (abs(u(k) - u_true(k)) > tolerance) test_answer = .true.
   enddo
   if (test_answer .or. verbose) then
-    write(*,'(a4,2a24,x,a)') 'k','Calculated value','Correct value',label
+    write(stdout,'(a4,2a24,x,a)') 'k','Calculated value','Correct value',label
     do k = 1, n
-      if (u(k) /= u_true(k)) then
-        write(*,'(i4,1p2e24.16,a,1pe24.16,a)') k,u(k),u_true(k),' err=',u(k)-u_true(k),' < wrong'
+      if (abs(u(k) - u_true(k)) > tolerance) then
+        write(stdout,'(i4,1p2e24.16,a,1pe24.16,a)') k,u(k),u_true(k),' err=',u(k)-u_true(k),' < wrong'
+        write(stderr,'(i4,1p2e24.16,a,1pe24.16,a)') k,u(k),u_true(k),' err=',u(k)-u_true(k),' < wrong'
       else
-        write(*,'(i4,1p2e24.16)') k,u(k),u_true(k)
+        write(stdout,'(i4,1p2e24.16)') k,u(k),u_true(k)
       endif
     enddo
   endif
@@ -1790,11 +1921,11 @@ subroutine dumpGrid(n,h,x,u)
   real, dimension(:), intent(in) :: x !< Interface delta
   real, dimension(:), intent(in) :: u !< Cell average values
   integer :: i
-  write(*,'("i=",20i10)') (i,i=1,n+1)
-  write(*,'("x=",20es10.2)') (x(i),i=1,n+1)
-  write(*,'("i=",5x,20i10)') (i,i=1,n)
-  write(*,'("h=",5x,20es10.2)') (h(i),i=1,n)
-  write(*,'("u=",5x,20es10.2)') (u(i),i=1,n)
+  write(stdout,'("i=",20i10)') (i,i=1,n+1)
+  write(stdout,'("x=",20es10.2)') (x(i),i=1,n+1)
+  write(stdout,'("i=",5x,20i10)') (i,i=1,n)
+  write(stdout,'("h=",5x,20es10.2)') (h(i),i=1,n)
+  write(stdout,'("u=",5x,20es10.2)') (u(i),i=1,n)
 end subroutine dumpGrid
 
 end module MOM_remapping
