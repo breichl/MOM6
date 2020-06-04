@@ -2228,7 +2228,7 @@ subroutine layered_diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_e
       Kd_heat(i,j,k) = Kd_int(i,j,k)
     enddo; enddo ; enddo
     call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
-          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_turb )
+          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
 !$OMP end parallel
 !$OMP do
     do k=1,nz+1 ; do j=js,je ; do i=is,ie

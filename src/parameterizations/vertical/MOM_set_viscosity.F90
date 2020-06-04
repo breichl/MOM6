@@ -1751,7 +1751,7 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
                  do_not_log=.true.)
 
   use_kappa_shear = .false. ; KS_at_vertex = .false. ; use_CVMix_shear = .false.
-  useKPP = .false. ; useEPBL = .false. ; use_CVMix_conv = .false. ; use_GOTM = .false.
+  useKPP = .false. ; useEPBL = .false. ; use_CVMix_conv = .false. ; useGOTM = .false.
 
   if (.not.adiabatic) then
     use_kappa_shear = kappa_shear_is_used(param_file)

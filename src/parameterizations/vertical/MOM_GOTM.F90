@@ -248,7 +248,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
 
 
   ! some constants
-  GoRho = G%g_Earth / GV%Rho0
+  GoRho = GV%g_Earth / GV%Rho0
 
 !$OMP parallel do default(none) shared(G,GV,CS,EOS,uStar,Temp,Salt,u,v,h,GoRho,       &
 !$OMP                                  Kt, Ks, KV)
