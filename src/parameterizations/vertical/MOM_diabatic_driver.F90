@@ -754,6 +754,34 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
 
   endif
 
+  if (CS%useGOTM) then
+!$OMP parallel default(none) shared(is,ie,js,je,nz,Kd_salt,Kd_int,visc,CS,Kd_heat)
+!$OMP do
+    do k=1,nz+1 ; do j=js,je ; do i=is,ie
+      Kd_salt(i,j,k) = Kd_int(i,j,k)
+      Kd_heat(i,j,k) = Kd_int(i,j,k)
+    enddo; enddo ; enddo
+    call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
+!$OMP end parallel
+!$OMP do
+    do k=1,nz+1 ; do j=js,je ; do i=is,ie
+       Kd_int(i,j,k) = min( Kd_salt(i,j,k),  Kd_heat(i,j,k) )
+    enddo ; enddo ; enddo
+    if (associated(visc%Kd_extra_S)) then
+!$OMP do
+      do k=1,nz+1 ; do j=js,je ; do i=is,ie
+        visc%Kd_extra_S(i,j,k) = Kd_salt(i,j,k) - Kd_int(i,j,k)
+      enddo ; enddo ; enddo
+    endif
+    if (associated(visc%Kd_extra_T)) then
+!$OMP do
+      do k=1,nz+1 ; do j=js,je ; do i=is,ie
+        visc%Kd_extra_T(i,j,k) = Kd_heat(i,j,k) - Kd_int(i,j,k)
+      enddo ; enddo ; enddo
+    endif
+  endif
+
   ! Calculate vertical mixing due to convection (computed via CVMix)
   if (CS%use_CVMix_conv) then
     call calculate_CVMix_conv(h, tv, G, GV, US, CS%CVMix_conv_csp, Hml)
@@ -1516,6 +1544,34 @@ subroutine diabatic_ALE(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, 
       enddo ; enddo ; enddo
     endif
 
+  endif
+
+  if (CS%useGOTM) then
+!$OMP parallel default(none) shared(is,ie,js,je,nz,Kd_salt,Kd_int,visc,CS,Kd_heat)
+!$OMP do
+    do k=1,nz+1 ; do j=js,je ; do i=is,ie
+      Kd_salt(i,j,k) = Kd_int(i,j,k)
+      Kd_heat(i,j,k) = Kd_int(i,j,k)
+    enddo; enddo ; enddo
+    call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
+!$OMP end parallel
+!$OMP do
+    do k=1,nz+1 ; do j=js,je ; do i=is,ie
+       Kd_int(i,j,k) = min( Kd_salt(i,j,k),  Kd_heat(i,j,k) )
+    enddo ; enddo ; enddo
+    if (associated(visc%Kd_extra_S)) then
+!$OMP do
+      do k=1,nz+1 ; do j=js,je ; do i=is,ie
+        visc%Kd_extra_S(i,j,k) = Kd_salt(i,j,k) - Kd_int(i,j,k)
+      enddo ; enddo ; enddo
+    endif
+    if (associated(visc%Kd_extra_T)) then
+!$OMP do
+      do k=1,nz+1 ; do j=js,je ; do i=is,ie
+        visc%Kd_extra_T(i,j,k) = Kd_heat(i,j,k) - Kd_int(i,j,k)
+      enddo ; enddo ; enddo
+    endif
   endif
 
   ! Calculate vertical mixing due to convection (computed via CVMix)
@@ -3868,3 +3924,4 @@ end subroutine diabatic_driver_end
 !!  There is no limit on the time step.
 
 end module MOM_diabatic_driver
+                                                                     
