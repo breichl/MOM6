@@ -1321,7 +1321,7 @@ subroutine log_param_int_array(CS, modulename, varname, value, desc, &
   logical,          optional, intent(in) :: debuggingParam !< If present and true, this parameter is
                                          !! logged in the debugging parameter file
 
-  character(len=1320) :: mesg
+  character(len=4000) :: mesg
   character(len=240) :: myunits
 
   write(mesg, '("  ",a," ",a,": ",A)') trim(modulename), trim(varname), trim(left_ints(value))
@@ -1383,7 +1383,7 @@ subroutine log_param_real_array(CS, modulename, varname, value, desc, &
   logical,          optional, intent(in) :: debuggingParam !< If present and true, this parameter is
                                          !! logged in the debugging parameter file
 
-  character(len=1320) :: mesg
+  character(len=4000) :: mesg
   character(len=240) :: myunits
 
  !write(mesg, '("  ",a," ",a,": ",ES19.12,99(",",ES19.12))') &

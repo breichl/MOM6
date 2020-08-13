@@ -71,15 +71,15 @@ end function left_int
 !! integers  e.g. "1, 2, 3, 4"
 function left_ints(i)
   integer, intent(in) :: i(:) !< The array of integers to convert to a string
-  character(len=1320) :: left_ints !< The output string
+  character(len=4000) :: left_ints !< The output string
 
-  character(len=1320) :: tmp
+  character(len=4000) :: tmp
   integer :: j
-  write(left_ints(1:1320),'(A)') trim(left_int(i(1)))
+  write(left_ints(1:4000),'(A)') trim(left_int(i(1)))
   if (size(i)>1) then
     do j=2,size(i)
       tmp=left_ints
-      write(left_ints(1:1320),'(A,", ",A)') trim(tmp),trim(left_int(i(j)))
+      write(left_ints(1:4000),'(A,", ",A)') trim(tmp),trim(left_int(i(j)))
     enddo
   endif
 end function left_ints
@@ -142,7 +142,7 @@ function left_reals(r,sep)
   real, intent(in) :: r(:) !< The array of real variables to convert to a string
   character(len=*), optional, intent(in) :: sep !< The separator between
                                     !! successive values, by default it is ', '.
-  character(len=1320) :: left_reals !< The output string
+  character(len=4000) :: left_reals !< The output string
 
   integer :: j, n, b, ns
   logical :: doWrite

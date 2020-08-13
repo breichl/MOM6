@@ -75,6 +75,7 @@ type, public :: surface_forcing_CS ; private
   logical :: adiabatic          !< if true, no diapycnal mass fluxes or surface buoyancy forcing
   logical :: variable_winds     !< if true, wind stresses vary with time
   logical :: variable_buoyforce !< if true, buoyancy forcing varies with time.
+  logical :: ramp_wind          !< if true, wind is initially damped to zero and increased in time
   real    :: south_lat          !< southern latitude of the domain
   real    :: len_lat            !< domain length in latitude
 
@@ -122,6 +123,8 @@ type, public :: surface_forcing_CS ; private
                                         !! a very old version of the OMIP forcing
   logical :: dataOverrideIsInitialized = .false. !< If true, data override has been initialized
 
+  real :: Ramp_Total_Time     !< time over which to ramp wind from zero.
+  real :: Ramp_Timer=0.0      !< Present value of ramp timer
   real :: wind_scale          !< value by which wind-stresses are scaled, ND.
   real :: constantHeatForcing !< value used for sensible heat flux when buoy_config="const" [Q R Z T-1 ~> W m-2]
 
@@ -297,6 +300,10 @@ subroutine set_forcing(sfc_state, forces, fluxes, day_start, day_interval, G, US
        call MOM_error(FATAL, &
        "MOM_surface_forcing:Unrecognized wind config "//trim(CS%wind_config))
     endif
+
+    if (CS%Ramp_Wind) then
+      call Ramp_Wind(forces,G,dt,CS,US)
+    endif
   endif
 
   ! calls to various buoyancy forcing options
@@ -359,6 +366,51 @@ subroutine set_forcing(sfc_state, forces, fluxes, day_start, day_interval, G, US
   call callTree_leave("set_forcing")
 
 end subroutine set_forcing
+
+!> Ramps up the wind by damping to zero at the beginning of the simulation
+subroutine ramp_wind(forces, G, dt, CS, US)
+  type(mech_forcing),       intent(inout) :: forces !< A structure with the driving mechanical forces
+  type(ocean_grid_type),    intent(in)    :: G      !< The ocean's grid structure
+  real,                     intent(in)    :: dt     !< The time interval
+  type(unit_scale_type),    intent(in)    :: US   !< A dimensional unit scaling type
+  type(surface_forcing_CS), pointer       :: CS     !< pointer to control struct returned by
+                                                    !! a previous surface_forcing_init call
+  real :: Ramp ! The multiplier for the wind ramp
+  integer :: is, ie, js, je, isq, ieq, jsq, jeq
+  integer :: i, j
+  real :: i_rho
+  
+  call callTree_enter("ramp_wind, MOM_surface_forcing.F90")
+  is   = G%isc  ; ie   = G%iec  ; js   = G%jsc  ; je   = G%jec
+  Isq  = G%IscB ; Ieq  = G%IecB ; Jsq  = G%JscB ; Jeq  = G%JecB
+
+  Ramp = min( 1., (CS%Ramp_Timer+0.5*dt)/CS%Ramp_Total_Time )
+  CS%Ramp_Timer = CS%Ramp_Timer + dt
+
+  if (CS%Ramp_Timer>CS%Ramp_Total_Time) then
+    !Disables the ramp after the timer so this routine
+    !is no longer called.
+    CS%Ramp_Wind = .false.
+  endif
+
+  
+  do j=js,je ; do I=is-1,Ieq
+    forces%taux(I,j) = forces%taux(I,j)*Ramp
+  enddo ; enddo
+
+  do J=js-1,Jeq ; do i=is,ie
+    forces%tauy(i,J) = forces%tauy(i,J)*Ramp
+  enddo ; enddo
+
+  if (associated(forces%ustar)) then ; do j=js,je ; do i=is,ie
+    I_rho = US%L_to_Z / CS%Rho0
+    forces%ustar(i,j) = sqrt( (CS%gust_const + &
+          sqrt(0.5*((forces%tauy(i,J-1)**2 + forces%tauy(i,J)**2) + &
+                    (forces%taux(I-1,j)**2 + forces%taux(I,j)**2))) ) * I_rho )
+  enddo ; enddo ;  endif
+
+  call callTree_leave("ramp_wind")
+end subroutine ramp_wind
 
 !> Sets the surface wind stresses to constant values
 subroutine wind_forcing_const(sfc_state, forces, tau_x0, tau_y0, day, G, US, CS)
@@ -1414,6 +1466,7 @@ subroutine surface_forcing_init(Time, G, US, param_file, diag, CS, tracer_flow_C
   type(directories)  :: dirs
   logical            :: new_sim
   type(time_type)    :: Time_frc
+  real               :: Ramp_Days
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
   real :: flux_const_default ! The unscaled value of FLUXCONST [m day-1]
@@ -1452,6 +1505,23 @@ subroutine surface_forcing_init(Time, G, US, param_file, diag, CS, tracer_flow_C
   call get_param(param_file, mdl, "VARIABLE_WINDS", CS%variable_winds, &
                  "If true, the winds vary in time after the initialization.", &
                  default=.true.)
+  if (CS%variable_winds) then
+    call get_param(param_file, mdl, "RAMP_WIND", CS%Ramp_Wind, &
+                 "If true, the winds are damped to zero at the initialization "//&
+                 "and are linearly increased over period RAMP_DAYS", &
+                 default=.false.)
+    call get_param(param_file, mdl, "RAMP_WIND_DAYS", CS%Ramp_Total_Time, &
+                 "The length of time (in days) to apply the wind ramp.", &
+                 default=0.,scale=86400.0/US%T_to_s)
+  else
+    call get_param(param_file, mdl, "RAMP_WIND", CS%Ramp_Wind, &
+                   "If true, the winds are damped to zero at the initialization "//&
+                   "and are linearly increased over period RAMP_DAYS", &
+                   default=.false.)
+    if (CS%Ramp_Wind) then
+      call MOM_error(FATAL,"Cannot use RAMP_WIND = True and VARIABLE_WINDS = False")
+    endif
+  endif 
   call get_param(param_file, mdl, "VARIABLE_BUOYFORCE", CS%variable_buoyforce, &
                  "If true, the buoyancy forcing varies in time after the "//&
                  "initialization of the model.", default=.true.)

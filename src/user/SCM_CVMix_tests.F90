@@ -69,6 +69,8 @@ subroutine SCM_CVMix_tests_TS_init(T, S, h, G, GV, US, param_file, just_read_par
   real :: UpperLayerSalt !< Upper layer salinity (SSS if thickness 0) [ppt]
   real :: LowerLayerTemp !< Temp at top of lower layer [degC]
   real :: LowerLayerSalt !< Salt at top of lower layer [ppt]
+  real :: UpperLayerdTdz !< Temp gradient in upper layer [degC / Z ~> degC m-1].
+  real :: UpperLayerdSdz !< Salt gradient in upper layer [ppt / Z ~> ppt m-1].
   real :: LowerLayerdTdz !< Temp gradient in lower layer [degC / Z ~> degC m-1].
   real :: LowerLayerdSdz !< Salt gradient in lower layer [ppt / Z ~> ppt m-1].
   real :: LowerLayerMinTemp !< Minimum temperature in lower layer [degC]
@@ -92,7 +94,13 @@ subroutine SCM_CVMix_tests_TS_init(T, S, h, G, GV, US, param_file, just_read_par
   call get_param(param_file, mdl, "SCM_L1_SALT", UpperLayerSalt, &
                  'Layer 2 surface salinity', units='1e-3', default=35.0, do_not_log=just_read)
   call get_param(param_file, mdl, "SCM_L1_TEMP", UpperLayerTemp, &
-                 'Layer 1 surface temperature', units='C', default=20.0, do_not_log=just_read)
+       'Layer 1 surface temperature', units='C', default=20.0, do_not_log=just_read)
+  call get_param(param_file, mdl, "SCM_L1_DTDZ", UpperLayerdTdZ,     &
+                 'Initial temperature stratification in layer 1', &
+                 units='C/m', default=0.0, scale=US%Z_to_m, do_not_log=just_read)
+    call get_param(param_file, mdl, "SCM_L1_DSDZ", UpperLayerdSdZ,  &
+                 'Initial salinity stratification in layer 1', &
+                 units='PPT/m', default=0.0, scale=US%Z_to_m, do_not_log=just_read)
   call get_param(param_file, mdl, "SCM_L2_SALT", LowerLayerSalt, &
                  'Layer 2 surface salinity', units='1e-3', default=35.0, do_not_log=just_read)
   call get_param(param_file, mdl, "SCM_L2_TEMP", LowerLayerTemp, &
@@ -108,16 +116,28 @@ subroutine SCM_CVMix_tests_TS_init(T, S, h, G, GV, US, param_file, just_read_par
 
   if (just_read) return ! All run-time parameters have been read, so return.
 
-  do j=js,je ; do i=is,ie
+  do j=jsd,jed ; do i=isd,ied
     top = 0. ! Reference to surface
     bottom = 0.
     do k=1,nz
       bottom = bottom - h(i,j,k)*GV%H_to_Z ! Interface below layer [Z ~> m]
       zC = 0.5*( top + bottom )        ! Z of middle of layer [Z ~> m]
-      DZ = min(0., zC + UpperLayerTempMLD)
-      T(i,j,k) = max(LowerLayerMinTemp,LowerLayerTemp + LowerLayerdTdZ * DZ)
-      DZ = min(0., zC + UpperLayerSaltMLD)
-      S(i,j,k) = LowerLayerSalt + LowerLayerdSdZ * DZ
+      if (abs(UpperLayerdTdz)>0.0 .and. &
+           (Zc+UpperLayerTempMLD)>0.0) then
+        DZ = zC
+        T(i,j,k) = UpperLayerTemp + UpperLayerdTdZ * DZ
+      else
+        DZ = min(0., zC + UpperLayerTempMLD)
+        T(i,j,k) = max(LowerLayerMinTemp,LowerLayerTemp + LowerLayerdTdZ * DZ)
+     endif
+     if (abs(UpperLayerdSdz)>0.0 .and. &
+          (Zc+UpperLayerSaltMLD)>0.0) then
+        DZ = zC
+        S(i,j,k) = UpperLayerSalt + UpperLayerdSdZ * DZ
+     else
+         DZ = min(0., zC + UpperLayerSaltMLD)
+         S(i,j,k) = LowerLayerSalt + LowerLayerdSdZ * DZ
+      endif
       top = bottom
     enddo ! k
   enddo ; enddo

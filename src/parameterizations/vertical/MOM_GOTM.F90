@@ -237,6 +237,8 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
   real :: Dpt, DZ, DU, DV              ! In-situ depth and dz [h units]
   integer :: kk, ksfc, ktmp
 
+  integer :: sCycle, nCycle
+
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then
 !    call hchksum(h*GV%H_to_m, "KPP in: h",G,haloshift=0)
@@ -374,19 +376,20 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
         g_l(kgotm)   = CS%L(i,j,k)
         g_h(kgotm) = H_1d(k)
      enddo
-
-     call do_turbulence(G%ke,&! Number of levels
-                        dt,&! time step
-                        dpt,&! depth
-                        ustar(i,j),&! ustar surface
-                        0.,&! ustar bottom
-                        0.02,&! Z0 surface ! This could be made to compute from Charnock, or run-time
-                        0.02,&! Z0 bottom  ! ditto
-                        g_h,&! Thickness (e.g., see calculation above)
-                        g_N2,&! Buoyancy Frequency
-                        g_S2 &! Shear squared
-                        ) ! An additional TKE production source is optional input, neglected here
-     !
+     nCycle = 100
+     do sCycle=1,nCycle
+       call do_turbulence(G%ke,&! Number of levels
+                          dt/real(nCycle),&! time step
+                          dpt,&! depth
+                          ustar(i,j),&! ustar surface
+                          0.,&! ustar bottom
+                          0.02,&! Z0 surface ! This could be made to compute from Charnock, or run-time
+                          0.02,&! Z0 bottom  ! ditto
+                          g_h,&! Thickness (e.g., see calculation above)
+                          g_N2,&! Buoyancy Frequency
+                          g_S2 &! Shear squared
+                          ) ! An additional TKE production source is optional input, neglected here
+     enddo
 
      do k=1,G%ke+1
        kgotm=G%ke-k+1
