@@ -123,7 +123,7 @@ type, public :: vertvisc_CS ; private
   integer :: id_du_dt_visc = -1, id_dv_dt_visc = -1, id_au_vv = -1, id_av_vv = -1
   integer :: id_h_u = -1, id_h_v = -1, id_hML_u = -1 , id_hML_v = -1
   integer :: id_Ray_u = -1, id_Ray_v = -1, id_taux_bot = -1, id_tauy_bot = -1
-  integer :: id_Kv_slow = -1, id_Kv_u = -1, id_Kv_v = -1
+  integer :: id_Kv_slow = -1, id_Kv_u = -1, id_Kv_v = -1, id_Kv_shear = -1
   ! integer :: id_hf_du_dt_visc    = -1, id_hf_dv_dt_visc    = -1
   integer :: id_hf_du_dt_visc_2d = -1, id_hf_dv_dt_visc_2d = -1
   !>@}
@@ -1069,7 +1069,8 @@ subroutine vertvisc_coef(u, v, h, forces, visc, dt, G, GV, US, CS, OBC)
 
 ! Offer diagnostic fields for averaging.
   if (associated(visc%Kv_slow) .and. (CS%id_Kv_slow > 0)) &
-      call post_data(CS%id_Kv_slow, visc%Kv_slow, CS%diag)
+       call post_data(CS%id_Kv_slow, visc%Kv_slow, CS%diag)
+  if (CS%id_Kv_shear > 0) call post_data(CS%id_Kv_shear, visc%Kv_shear, CS%diag)
   if (CS%id_Kv_u > 0) call post_data(CS%id_Kv_u, Kv_u, CS%diag)
   if (CS%id_Kv_v > 0) call post_data(CS%id_Kv_v, Kv_v, CS%diag)
   if (CS%id_au_vv > 0) call post_data(CS%id_au_vv, CS%a_u, CS%diag)
@@ -1763,6 +1764,9 @@ subroutine vertvisc_init(MIS, Time, G, GV, US, param_file, diag, ADp, dirs, &
 
   CS%id_Kv_slow = register_diag_field('ocean_model', 'Kv_slow', diag%axesTi, Time, &
      'Slow varying vertical viscosity', 'm2 s-1', conversion=US%Z2_T_to_m2_s)
+
+  CS%id_Kv_shear = register_diag_field('ocean_model', 'Kv_shear', diag%axesTi, Time, &
+     'Vertical viscosity', 'm2 s-1', conversion=US%Z2_T_to_m2_s)
 
   CS%id_Kv_u = register_diag_field('ocean_model', 'Kv_u', diag%axesCuL, Time, &
      'Total vertical viscosity at u-points', 'm2 s-1', conversion=US%Z2_T_to_m2_s)

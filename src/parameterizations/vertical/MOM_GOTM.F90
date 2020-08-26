@@ -57,6 +57,8 @@ type, public :: GOTM_CS ; private
 
   real :: minK = 1.e-4
 
+  integer :: NSubCycle
+  
   ! Diagnostic handles and pointers
   type(diag_ctrl), pointer :: diag => NULL()
   integer :: id_TKE = -1
@@ -109,7 +111,9 @@ logical function GOTM_init(paramFile, G, diag, Time, CS, passive)
        "If true, turns on the GOTM wrapper to calculate\n"// &
        " turbulent diffusivities. ", default=.false.)
     ! Forego remainder of initialization if not using this scheme
-   if (.not. GOTM_init) return
+  if (.not. GOTM_init) return
+  call get_param(paramFile, mod, "GOTM_NSUBCYCLE", CS%NSubCycle, &
+       "Number of times to cycle GOTM per timestep. ", default=1)
 
   !Allocate on grid center of computational domain indices
   ! Note the allocated values will not matter, on first time step
@@ -237,7 +241,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
   real :: Dpt, DZ, DU, DV              ! In-situ depth and dz [h units]
   integer :: kk, ksfc, ktmp
 
-  integer :: sCycle, nCycle
+  integer :: sCycle
 
 #ifdef __DO_SAFETY_CHECKS__
   if (CS%debug) then
@@ -376,10 +380,9 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
         g_l(kgotm)   = CS%L(i,j,k)
         g_h(kgotm) = H_1d(k)
      enddo
-     nCycle = 100
-     do sCycle=1,nCycle
+     do sCycle=1,CS%NSubCycle
        call do_turbulence(G%ke,&! Number of levels
-                          dt/real(nCycle),&! time step
+                          dt/real(CS%NSubCycle),&! time step
                           dpt,&! depth
                           ustar(i,j),&! ustar surface
                           0.,&! ustar bottom
