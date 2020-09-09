@@ -110,7 +110,6 @@ type, public :: bulkmixedlayer_CS ; private
                              !! to set the heat carried by runoff, instead of
                              !! using SST for temperature of liq_runoff
   logical :: use_calving_heat_content !< Use SST for temperature of froz_runoff
-  logical :: salt_reject_below_ML !< It true, add salt below mixed layer (layer mode only)
   logical :: convect_mom_bug !< If true, use code with a bug that causes a loss of momentum
                              !! conservation during mixedlayer convection.
 
@@ -219,7 +218,7 @@ subroutine bulkmixedlayer(h_3d, u_3d, v_3d, tv, fluxes, dt, ea, eb, G, GV, US, C
   type(optics_type),          pointer       :: optics !< The structure containing the inverse of the
                                                       !! vertical absorption decay scale for
                                                       !! penetrating shortwave radiation [m-1].
-  real, dimension(:,:),       pointer       :: Hml    !< Active mixed layer depth [m].
+  real, dimension(:,:),       pointer       :: Hml    !< Active mixed layer depth [Z ~> m].
   logical,                    intent(in)    :: aggregate_FW_forcing !< If true, the net incoming and
                                                      !! outgoing surface freshwater fluxes are
                                                      !! combined before being applied, instead of
@@ -592,7 +591,7 @@ subroutine bulkmixedlayer(h_3d, u_3d, v_3d, tv, fluxes, dt, ea, eb, G, GV, US, C
       CS%ML_depth(i,j) = h(i,0) * GV%H_to_m  ! Rescale the diagnostic.
     enddo ; endif
     if (associated(Hml)) then ; do i=is,ie
-      Hml(i,j) = G%mask2dT(i,j) * (h(i,0) * GV%H_to_m) ! Rescale the diagnostic for output.
+      Hml(i,j) = G%mask2dT(i,j) * (h(i,0) * GV%H_to_Z) ! Rescale the diagnostic for output.
     enddo ; endif
 
 ! At this point, return water to the original layers, but constrained to
@@ -3439,7 +3438,7 @@ subroutine bulkmixedlayer_init(Time, G, GV, US, param_file, diag, CS)
                  "BULKMIXEDLAYER is true.", units="nondim", default=2)
   call get_param(param_file, mdl, "MSTAR", CS%mstar, &
                  "The ratio of the friction velocity cubed to the TKE "//&
-                 "input to the mixed layer.", "units=nondim", default=1.2)
+                 "input to the mixed layer.", units="nondim", default=1.2)
   call get_param(param_file, mdl, "NSTAR", CS%nstar, &
                  "The portion of the buoyant potential energy imparted by "//&
                  "surface fluxes that is available to drive entrainment "//&
@@ -3579,7 +3578,7 @@ subroutine bulkmixedlayer_init(Time, G, GV, US, param_file, diag, CS)
                  default=.false.)
   call get_param(param_file, mdl, "BULKML_CONV_MOMENTUM_BUG", CS%convect_mom_bug, &
                  "If true, use code with a bug that causes a loss of momentum conservation "//&
-                 "during mixedlayer convection.", default=.true.)
+                 "during mixedlayer convection.", default=.false.)
 
   call get_param(param_file, mdl, "ALLOW_CLOCKS_IN_OMP_LOOPS", &
                  CS%allow_clocks_in_omp_loops, &

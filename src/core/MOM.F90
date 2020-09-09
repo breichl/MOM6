@@ -45,7 +45,7 @@ use MOM_restart,              only : restart_init, is_new_run, MOM_restart_CS
 use MOM_spatial_means,        only : global_mass_integral
 use MOM_time_manager,         only : time_type, real_to_time, time_type_to_real, operator(+)
 use MOM_time_manager,         only : operator(-), operator(>), operator(*), operator(/)
-use MOM_time_manager,         only : operator(>=), increment_date
+use MOM_time_manager,         only : operator(>=), operator(==), increment_date
 use MOM_unit_tests,           only : unit_tests
 use coupler_types_mod,        only : coupler_type_send_data, coupler_1d_bc_type, coupler_type_spawn
 
@@ -57,7 +57,7 @@ use MOM_ALE_sponge,            only : rotate_ALE_sponge, update_ALE_sponge_field
 use MOM_barotropic,            only : Barotropic_CS
 use MOM_boundary_update,       only : call_OBC_register, OBC_register_end, update_OBC_CS
 use MOM_coord_initialization,  only : MOM_initialize_coord
-use MOM_diabatic_driver,       only : diabatic, diabatic_driver_init, diabatic_CS
+use MOM_diabatic_driver,       only : diabatic, diabatic_driver_init, diabatic_CS, extract_diabatic_member
 use MOM_diabatic_driver,       only : adiabatic, adiabatic_driver_init, diabatic_driver_end
 use MOM_diagnostics,           only : calculate_diagnostic_fields, MOM_diagnostics_init
 use MOM_diagnostics,           only : register_transport_diags, post_transport_diagnostics
@@ -184,7 +184,7 @@ type, public :: MOM_control_struct ; private
                     !< free surface height or column mass time averaged over the last
                     !! baroclinic dynamics time step [H ~> m or kg m-2]
   real, dimension(:,:), pointer :: &
-    Hml => NULL()   !< active mixed layer depth [m]
+    Hml => NULL()   !< active mixed layer depth [Z ~> m]
   real :: time_in_cycle !< The running time of the current time-stepping cycle
                     !! in calls that step the dynamics, and also the length of
                     !! the time integral of ssh_rint [T ~> s].
@@ -296,20 +296,20 @@ type, public :: MOM_control_struct ; private
                                 !! average surface tracer properties when a bulk
                                 !! mixed layer is not used [Z ~> m], or a negative value
                                 !! if a bulk mixed layer is being used.
-  real :: HFrz                  !< If HFrz > 0, melt potential will be computed.
-                                !! The actual depth over which melt potential is computed will
-                                !! min(HFrz, OBLD), where OBLD is the boundary layer depth.
+  real :: HFrz                  !< If HFrz > 0, the nominal depth over which melt potential is
+                                !! computed [Z ~> m]. The actual depth over which melt potential is
+                                !! computed is min(HFrz, OBLD), where OBLD is the boundary layer depth.
                                 !! If HFrz <= 0 (default), melt potential will not be computed.
   real :: Hmix_UV               !< Depth scale over which to average surface flow to
                                 !! feedback to the coupler/driver [Z ~> m] when
                                 !! bulk mixed layer is not used, or a negative value
                                 !! if a bulk mixed layer is being used.
   logical :: check_bad_sfc_vals !< If true, scan surface state for ridiculous values.
-  real    :: bad_val_ssh_max    !< Maximum SSH before triggering bad value message [m]
+  real    :: bad_val_ssh_max    !< Maximum SSH before triggering bad value message [Z ~> m]
   real    :: bad_val_sst_max    !< Maximum SST before triggering bad value message [degC]
   real    :: bad_val_sst_min    !< Minimum SST before triggering bad value message [degC]
   real    :: bad_val_sss_max    !< Maximum SSS before triggering bad value message [ppt]
-  real    :: bad_val_col_thick  !< Minimum column thickness before triggering bad value message [m]
+  real    :: bad_val_col_thick  !< Minimum column thickness before triggering bad value message [Z ~> m]
   logical :: answers_2018       !< If true, use expressions for the surface properties that recover
                                 !! the answers from the end of 2018. Otherwise, use more appropriate
                                 !! expressions that differ at roundoff for non-Boussinsq cases.
@@ -406,6 +406,7 @@ integer :: id_clock_pass_init  ! also in dynamics d/r
 integer :: id_clock_ALE
 integer :: id_clock_other
 integer :: id_clock_offline_tracer
+integer :: id_clock_unit_tests
 !>@}
 
 contains
@@ -594,8 +595,9 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
     dt_therm = dt ; ntstep = 1
     if (associated(fluxes%p_surf)) p_surf => fluxes%p_surf
     CS%tv%p_surf => NULL()
-    if (CS%use_p_surf_in_EOS .and. associated(forces%p_surf)) CS%tv%p_surf => fluxes%p_surf
-
+    if (associated(fluxes%p_surf)) then
+      if (CS%use_p_surf_in_EOS) CS%tv%p_surf => fluxes%p_surf
+    endif
     if (CS%UseWaves) call pass_var(fluxes%ustar, G%Domain, clock=id_clock_pass)
   endif
 
@@ -994,7 +996,7 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     call enable_averages(dt_thermo, Time_local+real_to_time(US%T_to_s*(dt_thermo-dt)), CS%diag)
     call cpu_clock_begin(id_clock_thick_diff)
     if (associated(CS%VarMix)) &
-      call calc_slope_functions(h, CS%tv, dt, G, GV, US, CS%VarMix)
+      call calc_slope_functions(h, CS%tv, dt, G, GV, US, CS%VarMix, OBC=CS%OBC)
     call thickness_diffuse(h, CS%uhtr, CS%vhtr, CS%tv, dt_thermo, G, GV, US, &
                            CS%MEKE, CS%VarMix, CS%CDp, CS%thickness_diffuse_CSp)
     call cpu_clock_end(id_clock_thick_diff)
@@ -1013,7 +1015,7 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
               Time_local + real_to_time(US%T_to_s*(bbl_time_int-dt)), CS%diag)
     ! Calculate the BBL properties and store them inside visc (u,h).
     call cpu_clock_begin(id_clock_BBL_visc)
-    call set_viscous_BBL(CS%u(:,:,:), CS%v(:,:,:), CS%h, CS%tv, CS%visc, G, GV, US, &
+    call set_viscous_BBL(CS%u, CS%v, CS%h, CS%tv, CS%visc, G, GV, US, &
                          CS%set_visc_CSp, symmetrize=.true.)
     call cpu_clock_end(id_clock_BBL_visc)
     if (showCallTree) call callTree_wayPoint("done with set_viscous_BBL (step_MOM)")
@@ -1067,7 +1069,7 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     if (CS%debug) call hchksum(h,"Pre-thickness_diffuse h", G%HI, haloshift=0, scale=GV%H_to_m)
 
     if (associated(CS%VarMix)) &
-      call calc_slope_functions(h, CS%tv, dt, G, GV, US, CS%VarMix)
+      call calc_slope_functions(h, CS%tv, dt, G, GV, US, CS%VarMix, OBC=CS%OBC)
     call thickness_diffuse(h, CS%uhtr, CS%vhtr, CS%tv, dt, G, GV, US, &
                            CS%MEKE, CS%VarMix, CS%CDp, CS%thickness_diffuse_CSp)
 
@@ -1136,6 +1138,7 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
   type(time_type),          intent(in)    :: Time_local !< The model time at the end
                                                     !! of the time step.
   type(group_pass_type) :: pass_T_S
+  integer :: halo_sz ! The size of a halo where data must be valid.
   logical :: showCallTree
   showCallTree = callTree_showQuery()
 
@@ -1184,12 +1187,19 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, US, h, Time_local)
   CS%t_dyn_rel_adv = 0.0
   call cpu_clock_end(id_clock_tracer) ; call cpu_clock_end(id_clock_thermo)
 
-  if (CS%diabatic_first .and. associated(CS%tv%T)) then
-    ! Temperature and salinity need halo updates because they will be used
-    ! in the dynamics before they are changed again.
-    call create_group_pass(pass_T_S, CS%tv%T, G%Domain, To_All+Omit_Corners, halo=1)
-    call create_group_pass(pass_T_S, CS%tv%S, G%Domain, To_All+Omit_Corners, halo=1)
-    call do_group_pass(pass_T_S, G%Domain, clock=id_clock_pass)
+  if (associated(CS%tv%T)) then
+    call extract_diabatic_member(CS%diabatic_CSp, diabatic_halo=halo_sz)
+    if (halo_sz > 0) then
+      call create_group_pass(pass_T_S, CS%tv%T, G%Domain, To_All, halo=halo_sz)
+      call create_group_pass(pass_T_S, CS%tv%S, G%Domain, To_All, halo=halo_sz)
+      call do_group_pass(pass_T_S, G%Domain, clock=id_clock_pass)
+    elseif (CS%diabatic_first) then
+      ! Temperature and salinity need halo updates because they will be used
+      ! in the dynamics before they are changed again.
+      call create_group_pass(pass_T_S, CS%tv%T, G%Domain, To_All+Omit_Corners, halo=1)
+      call create_group_pass(pass_T_S, CS%tv%S, G%Domain, To_All+Omit_Corners, halo=1)
+      call do_group_pass(pass_T_S, G%Domain, clock=id_clock_pass)
+    endif
   endif
 
   CS%preadv_h_stored = .false.
@@ -1224,7 +1234,8 @@ subroutine step_MOM_thermo(CS, G, GV, US, u, v, h, tv, fluxes, dtdia, &
   type(group_pass_type) :: pass_T_S, pass_T_S_h, pass_uv_T_S_h
   integer :: dynamics_stencil  ! The computational stencil for the calculations
                                ! in the dynamic core.
-  integer :: i, j, k, is, ie, js, je, nz! , Isq, Ieq, Jsq, Jeq, n
+  integer :: halo_sz ! The size of a halo where data must be valid.
+  integer :: i, j, k, is, ie, js, je, nz
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
   showCallTree = callTree_showQuery()
@@ -1237,6 +1248,13 @@ subroutine step_MOM_thermo(CS, G, GV, US, u, v, h, tv, fluxes, dtdia, &
 
   if (associated(CS%odaCS)) then
     call apply_oda_tracer_increments(US%T_to_s*dtdia,G,tv,h,CS%odaCS)
+  endif
+
+  if (associated(fluxes%p_surf)) then
+    call extract_diabatic_member(CS%diabatic_CSp, diabatic_halo=halo_sz)
+    if (halo_sz > 0) then
+      call pass_var(fluxes%p_surf, G%Domain, clock=id_clock_pass, halo=halo_sz)
+    endif
   endif
 
   if (update_BBL) then
@@ -1265,8 +1283,8 @@ subroutine step_MOM_thermo(CS, G, GV, US, u, v, h, tv, fluxes, dtdia, &
 
     call cpu_clock_begin(id_clock_diabatic)
 
-    call diabatic(u, v, h, tv, CS%Hml, fluxes, CS%visc, CS%ADp, CS%CDp, &
-                  dtdia, Time_end_thermo, G, GV, US, CS%diabatic_CSp, Waves=Waves)
+    call diabatic(u, v, h, tv, CS%Hml, fluxes, CS%visc, CS%ADp, CS%CDp, dtdia, &
+                  Time_end_thermo, G, GV, US, CS%diabatic_CSp, OBC=CS%OBC, Waves=Waves)
     fluxes%fluxes_used = .true.
 
     if (showCallTree) call callTree_waypoint("finished diabatic (step_MOM_thermo)")
@@ -1277,12 +1295,14 @@ subroutine step_MOM_thermo(CS, G, GV, US, u, v, h, tv, fluxes, dtdia, &
     if ( CS%use_ALE_algorithm ) then
       call enable_averages(dtdia, Time_end_thermo, CS%diag)
 !         call pass_vector(u, v, G%Domain)
+      call cpu_clock_begin(id_clock_pass)
       if (associated(tv%T)) &
         call create_group_pass(pass_T_S_h, tv%T, G%Domain, To_All+Omit_Corners, halo=1)
       if (associated(tv%S)) &
         call create_group_pass(pass_T_S_h, tv%S, G%Domain, To_All+Omit_Corners, halo=1)
       call create_group_pass(pass_T_S_h, h, G%Domain, To_All+Omit_Corners, halo=1)
       call do_group_pass(pass_T_S_h, G%Domain)
+      call cpu_clock_end(id_clock_pass)
 
       call preAle_tracer_diagnostics(CS%tracer_Reg, G, GV)
 
@@ -1404,7 +1424,8 @@ subroutine step_offline(forces, fluxes, sfc_state, Time_start, time_interval, CS
   logical :: skip_diffusion
   integer :: id_eta_diff_end
 
-  integer, pointer :: accumulated_time => NULL()
+  type(time_type), pointer :: accumulated_time => NULL()
+  type(time_type), pointer :: vertical_time => NULL()
   integer :: i,j,k
   integer :: is, ie, js, je, isd, ied, jsd, jed
 
@@ -1426,32 +1447,30 @@ subroutine step_offline(forces, fluxes, sfc_state, Time_start, time_interval, CS
 
   call cpu_clock_begin(id_clock_offline_tracer)
   call extract_offline_main(CS%offline_CSp, uhtr, vhtr, eatr, ebtr, h_end, accumulated_time, &
-                            dt_offline, dt_offline_vertical, skip_diffusion)
+                            vertical_time, dt_offline, dt_offline_vertical, skip_diffusion)
   Time_end = increment_date(Time_start, seconds=floor(time_interval+0.001))
 
   call enable_averaging(time_interval, Time_end, CS%diag)
 
   ! Check to see if this is the first iteration of the offline interval
-  if (accumulated_time==0) then
+  if (accumulated_time == real_to_time(0.0)) then
     first_iter = .true.
   else ! This is probably unnecessary but is used to guard against unwanted behavior
     first_iter = .false.
   endif
 
-  ! Check to see if vertical tracer functions should  be done
-  if ( mod(accumulated_time, floor(US%T_to_s*dt_offline_vertical + 1e-6)) == 0 ) then
+  ! Check to see if vertical tracer functions should be done
+  if (first_iter .or. (accumulated_time >= vertical_time)) then
     do_vertical = .true.
+    vertical_time = accumulated_time + real_to_time(US%T_to_s*dt_offline_vertical)
   else
     do_vertical = .false.
   endif
 
   ! Increment the amount of time elapsed since last read and check if it's time to roll around
-  accumulated_time = mod(accumulated_time + int(time_interval), floor(US%T_to_s*dt_offline+1e-6))
-  if (accumulated_time==0) then
-    last_iter = .true.
-  else
-    last_iter = .false.
-  endif
+  accumulated_time = accumulated_time + real_to_time(time_interval)
+
+  last_iter = (accumulated_time >= real_to_time(US%T_to_s*dt_offline))
 
   if (CS%use_ALE_algorithm) then
     ! If this is the first iteration in the offline timestep, then we need to read in fields and
@@ -1480,7 +1499,7 @@ subroutine step_offline(forces, fluxes, sfc_state, Time_start, time_interval, CS
             call pass_var(CS%h, G%Domain)
             call calc_resoln_function(CS%h, CS%tv, G, GV, US, CS%VarMix)
             call calc_depth_function(G, CS%VarMix)
-            call calc_slope_functions(CS%h, CS%tv, dt_offline, G, GV, US, CS%VarMix)
+            call calc_slope_functions(CS%h, CS%tv, dt_offline, G, GV, US, CS%VarMix, OBC=CS%OBC)
           endif
           call tracer_hordiff(CS%h, dt_offline, CS%MEKE, CS%VarMix, G, GV, US, &
               CS%tracer_diff_CSp, CS%tracer_Reg, CS%tv)
@@ -1506,7 +1525,7 @@ subroutine step_offline(forces, fluxes, sfc_state, Time_start, time_interval, CS
             call pass_var(CS%h, G%Domain)
             call calc_resoln_function(CS%h, CS%tv, G, GV, US, CS%VarMix)
             call calc_depth_function(G, CS%VarMix)
-            call calc_slope_functions(CS%h, CS%tv, dt_offline, G, GV, US, CS%VarMix)
+            call calc_slope_functions(CS%h, CS%tv, dt_offline, G, GV, US, CS%VarMix, OBC=CS%OBC)
           endif
           call tracer_hordiff(CS%h, dt_offline, CS%MEKE, CS%VarMix, G, GV, US, &
               CS%tracer_diff_CSp, CS%tracer_Reg, CS%tv)
@@ -1565,6 +1584,10 @@ subroutine step_offline(forces, fluxes, sfc_state, Time_start, time_interval, CS
   call pass_var(CS%h, G%Domain)
 
   fluxes%fluxes_used = .true.
+
+  if (last_iter) then
+    accumulated_time = real_to_time(0.0)
+  endif
 
   call cpu_clock_end(id_clock_offline_tracer)
 
@@ -1670,6 +1693,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   integer :: dynamics_stencil  ! The computational stencil for the calculations
                                ! in the dynamic core.
   real :: conv2watt, conv2salt
+  real :: RL2_T2_rescale, Z_rescale, QRZ_rescale ! Unit conversion factors
   character(len=48) :: flux_units, S_flux_units
 
   type(vardesc) :: vd_T, vd_S  ! Structures describing temperature and salinity variables.
@@ -1701,8 +1725,12 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
 
   call find_obsolete_params(param_file)
 
+  ! Determining the internal unit scaling factors for this run.
+  call unit_scaling_init(param_file, CS%US)
+  US => CS%US
+
   ! Read relevant parameters and write them to the model log.
-  call log_version(param_file, "MOM", version, "")
+  call log_version(param_file, "MOM", version, "", log_to_all=.true., layout=.true., debugging=.true.)
   call get_param(param_file, "MOM", "VERBOSITY", verbosity,  &
                  "Integer controlling level of messaging\n" // &
                  "\t0 = Only FATAL messages\n" // &
@@ -1712,13 +1740,11 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  "If True, exercises unit tests at model start up.", &
                  default=.false., debuggingParam=.true.)
   if (do_unit_tests) then
+    id_clock_unit_tests = cpu_clock_id('(Ocean unit tests)', grain=CLOCK_MODULE)
+    call cpu_clock_begin(id_clock_unit_tests)
     call unit_tests(verbosity)
+    call cpu_clock_end(id_clock_unit_tests)
   endif
-
-  ! Determining the internal unit scaling factors for this run.
-  call unit_scaling_init(param_file, CS%US)
-
-  US => CS%US
 
   call get_param(param_file, "MOM", "SPLIT", CS%split, &
                  "Use the split time stepping if true.", default=.true.)
@@ -1858,7 +1884,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  "If HFREEZE > 0, melt potential will be computed. The actual depth "//&
                  "over which melt potential is computed will be min(HFREEZE, OBLD), "//&
                  "where OBLD is the boundary layer depth. If HFREEZE <= 0 (default), "//&
-                 "melt potential will not be computed.", units="m", default=-1.0)
+                 "melt potential will not be computed.", units="m", default=-1.0, scale=US%m_to_Z)
   call get_param(param_file, "MOM", "INTERPOLATE_P_SURF", CS%interp_p_surf, &
                  "If true, linearly interpolate the surface pressure "//&
                  "over the coupling time step, using the specified value "//&
@@ -1893,9 +1919,8 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  "model may ask for more salt than is available and "//&
                  "drive the salinity negative otherwise.)", default=.false.)
     call get_param(param_file, "MOM", "MIN_SALINITY", CS%tv%min_salinity, &
-                 "The minimum value of salinity when BOUND_SALINITY=True. "//&
-                 "The default is 0.01 for backward compatibility but ideally should be 0.", &
-                 units="PPT", default=0.01, do_not_log=.not.bound_salinity)
+                 "The minimum value of salinity when BOUND_SALINITY=True.", &
+                 units="PPT", default=0.0, do_not_log=.not.bound_salinity)
     call get_param(param_file, "MOM", "C_P", CS%tv%C_p, &
                  "The heat capacity of sea water, approximated as a "//&
                  "constant. This is only used if ENABLE_THERMODYNAMICS is "//&
@@ -1904,7 +1929,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  default=3991.86795711963, scale=US%J_kg_to_Q)
     call get_param(param_file, "MOM", "USE_PSURF_IN_EOS", CS%use_p_surf_in_EOS, &
                  "If true, always include the surface pressure contributions "//&
-                 "in equation of state calculations.", default=.false.) !### Change the default.
+                 "in equation of state calculations.", default=.true.)
   endif
   if (use_EOS) call get_param(param_file, "MOM", "P_REF", CS%tv%P_Ref, &
                  "The pressure that is used for calculating the coordinate "//&
@@ -1943,8 +1968,8 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   if (CS%check_bad_sfc_vals) then
     call get_param(param_file, "MOM", "BAD_VAL_SSH_MAX", CS%bad_val_ssh_max, &
                  "The value of SSH above which a bad value message is "//&
-                 "triggered, if CHECK_BAD_SURFACE_VALS is true.", units="m", &
-                 default=20.0)
+                 "triggered, if CHECK_BAD_SURFACE_VALS is true.", &
+                 units="m", default=20.0, scale=US%m_to_Z)
     call get_param(param_file, "MOM", "BAD_VAL_SSS_MAX", CS%bad_val_sss_max, &
                  "The value of SSS above which a bad value message is "//&
                  "triggered, if CHECK_BAD_SURFACE_VALS is true.", units="PPT", &
@@ -1959,12 +1984,12 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  units="deg C", default=-2.1)
     call get_param(param_file, "MOM", "BAD_VAL_COLUMN_THICKNESS", CS%bad_val_col_thick, &
                  "The value of column thickness below which a bad value message is "//&
-                 "triggered, if CHECK_BAD_SURFACE_VALS is true.", units="m", &
-                 default=0.0)
+                 "triggered, if CHECK_BAD_SURFACE_VALS is true.", &
+                 units="m", default=0.0, scale=US%m_to_Z)
   endif
   call get_param(param_file, "MOM", "DEFAULT_2018_ANSWERS", default_2018_answers, &
                  "This sets the default value for the various _2018_ANSWERS parameters.", &
-                 default=.true.)
+                 default=.false.)
   call get_param(param_file, "MOM", "SURFACE_2018_ANSWERS", CS%answers_2018, &
                  "If true, use expressions for the surface properties that recover the answers "//&
                  "from the end of 2018. Otherwise, use more appropriate expressions that differ "//&
@@ -2203,7 +2228,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
     allocate(CS%tv%frazil(isd:ied,jsd:jed)) ; CS%tv%frazil(:,:) = 0.0
   endif
   if (bound_salinity) then
-    allocate(CS%tv%salt_deficit(isd:ied,jsd:jed)) ; CS%tv%salt_deficit(:,:)=0.0
+    allocate(CS%tv%salt_deficit(isd:ied,jsd:jed)) ; CS%tv%salt_deficit(:,:) = 0.0
   endif
 
   if (bulkmixedlayer .or. use_temperature) then
@@ -2368,20 +2393,17 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
 
     if (associated(sponge_in_CSp)) then
       ! TODO: Implementation and testing of non-ALE spong rotation
-      call MOM_error(FATAL, "Index rotation of non-ALE sponge is not yet " &
-          // "implemented.")
+      call MOM_error(FATAL, "Index rotation of non-ALE sponge is not yet implemented.")
     endif
 
     if (associated(ALE_sponge_in_CSp)) then
-      call rotate_ALE_sponge(ALE_sponge_in_CSp, G_in, CS%ALE_sponge_CSp, G, &
-                             turns, param_file)
-      call update_ALE_sponge_field(CS%ALE_sponge_CSp, T_in, CS%T)
-      call update_ALE_sponge_field(CS%ALE_sponge_CSp, S_in, CS%S)
+      call rotate_ALE_sponge(ALE_sponge_in_CSp, G_in, CS%ALE_sponge_CSp, G, turns, param_file)
+      call update_ALE_sponge_field(CS%ALE_sponge_CSp, T_in, G, GV, CS%T)
+      call update_ALE_sponge_field(CS%ALE_sponge_CSp, S_in, G, GV, CS%S)
     endif
 
     if (associated(OBC_in)) &
-      call rotate_OBC_init(OBC_in, G, GV, US, param_file, CS%tv, restart_CSp, &
-                           CS%OBC)
+      call rotate_OBC_init(OBC_in, G, GV, US, param_file, CS%tv, restart_CSp, CS%OBC)
 
     deallocate(u_in)
     deallocate(v_in)
@@ -2426,7 +2448,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
     G => CS%G
     if (CS%debug .or. CS%G%symmetric) then
       call clone_MOM_domain(CS%G%Domain, CS%G%Domain_aux, symmetric=.false.)
-    else ; CS%G%Domain_aux => CS%G%Domain ;endif
+    else ; CS%G%Domain_aux => CS%G%Domain ; endif
     G%ke = GV%ke
   endif
 
@@ -2665,14 +2687,51 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   call register_obsolete_diagnostics(param_file, CS%diag)
 
   if (use_frazil) then
-    if (.not.query_initialized(CS%tv%frazil,"frazil",restart_CSp)) &
+    if (query_initialized(CS%tv%frazil, "frazil", restart_CSp)) then
+      ! Test whether the dimensional rescaling has changed for heat content.
+      if ((US%kg_m3_to_R_restart*US%m_to_Z_restart*US%J_kg_to_Q_restart /= 0.0) .and. &
+          ((US%J_kg_to_Q*US%kg_m3_to_R*US%m_to_Z) /= &
+           (US%J_kg_to_Q_restart*US%kg_m3_to_R_restart*US%m_to_Z_restart)) ) then
+        QRZ_rescale = (US%J_kg_to_Q*US%kg_m3_to_R*US%m_to_Z) / &
+                      (US%J_kg_to_Q_restart*US%kg_m3_to_R_restart*US%m_to_Z_restart)
+        do j=js,je ; do i=is,ie
+          CS%tv%frazil(i,j) = QRZ_rescale * CS%tv%frazil(i,j)
+        enddo ; enddo
+      endif
+    else
       CS%tv%frazil(:,:) = 0.0
+    endif
   endif
 
   if (CS%interp_p_surf) then
     CS%p_surf_prev_set = query_initialized(CS%p_surf_prev,"p_surf_prev",restart_CSp)
 
-    if (CS%p_surf_prev_set) call pass_var(CS%p_surf_prev, G%domain)
+    if (CS%p_surf_prev_set) then
+      ! Test whether the dimensional rescaling has changed for pressure.
+      if ((US%kg_m3_to_R_restart*US%s_to_T_restart*US%m_to_L_restart /= 0.0) .and. &
+          ((US%kg_m3_to_R*(US%m_to_L*US%s_to_T_restart)**2) /= &
+           (US%kg_m3_to_R_restart*(US%m_to_L_restart*US%s_to_T)**2)) ) then
+        RL2_T2_rescale = (US%kg_m3_to_R*(US%m_to_L*US%s_to_T_restart)**2) / &
+                         (US%kg_m3_to_R_restart*(US%m_to_L_restart*US%s_to_T)**2)
+        do j=js,je ; do i=is,ie
+          CS%p_surf_prev(i,j) = RL2_T2_rescale * CS%p_surf_prev(i,j)
+        enddo ; enddo
+      endif
+
+      call pass_var(CS%p_surf_prev, G%domain)
+    endif
+  endif
+
+  if (use_ice_shelf .and. associated(CS%Hml)) then
+    if (query_initialized(CS%Hml, "hML", restart_CSp)) then
+      ! Test whether the dimensional rescaling has changed for depths.
+      if ((US%m_to_Z_restart /= 0.0) .and. (US%m_to_Z /= US%m_to_Z_restart) ) then
+        Z_rescale = US%m_to_Z / US%m_to_Z_restart
+        do j=js,je ; do i=is,ie
+          CS%Hml(i,j) = Z_rescale * CS%Hml(i,j)
+        enddo ; enddo
+      endif
+    endif
   endif
 
   if (.not.query_initialized(CS%ave_ssh_ibc,"ave_ssh",restart_CSp)) then
@@ -2891,6 +2950,8 @@ subroutine set_restart_fields(GV, US, param_file, CS, restart_CSp)
                               "Time unit conversion factor", "T second-1")
   call register_restart_field(US%kg_m3_to_R_restart, "kg_m3_to_R", .false., restart_CSp, &
                               "Density unit conversion factor", "R m3 kg-1")
+  call register_restart_field(US%J_kg_to_Q_restart, "J_kg_to_Q", .false., restart_CSp, &
+                              "Heat content unit conversion factor.", units="Q kg J-1")
 
 end subroutine set_restart_fields
 
@@ -2960,15 +3021,14 @@ subroutine extract_surface_state(CS, sfc_state_in)
   real :: depth_ml           !< Depth over which to average to determine mixed
                              !! layer properties [Z ~> m] or [H ~> m or kg m-2]
   real :: dh                 !< Thickness of a layer within the mixed layer [Z ~> m] or [H ~> m or kg m-2]
-  real :: mass               !< Mass per unit area of a layer [kg m-2]
-  real :: bathy_m            !< The depth of bathymetry [m] (not Z), used for error checking.
+  real :: mass               !< Mass per unit area of a layer [R Z ~> kg m-2]
   real :: T_freeze           !< freezing temperature [degC]
   real :: I_depth            !< The inverse of depth [Z-1 ~> m-1] or [H-1 ~> m-1 or m2 kg-1]
   real :: missing_depth      !< The portion of depth_ml that can not be found in a column [H ~> m or kg m-2]
   real :: H_rescale          !< A conversion factor from thickness units to the units used in the
                              !! calculation of properties of the uppermost ocean [nondim] or [Z H-1 ~> 1 or m3 kg-1]
                              !  After the ANSWERS_2018 flag has been obsoleted, H_rescale will be 1.
-  real :: delT(SZI_(CS%G))   !< Depth integral of T-T_freeze [m degC]
+  real :: delT(SZI_(CS%G))   !< Depth integral of T-T_freeze [Z degC ~> m degC]
   logical :: use_temperature !< If true, temp and saln used as state variables.
   integer :: i, j, k, is, ie, js, je, nz, numberOfErrors, ig, jg
   integer :: isd, ied, jsd, jed
@@ -3009,11 +3069,11 @@ subroutine extract_surface_state(CS, sfc_state_in)
   sfc_state%S_is_absS = CS%tv%S_is_absS
 
   do j=js,je ; do i=is,ie
-    sfc_state%sea_lev(i,j) = CS%ave_ssh_ibc(i,j)
+    sfc_state%sea_lev(i,j) = US%m_to_Z*CS%ave_ssh_ibc(i,j)
   enddo ; enddo
 
   if (allocated(sfc_state%frazil) .and. associated(CS%tv%frazil)) then ; do j=js,je ; do i=is,ie
-    sfc_state%frazil(i,j) = US%Q_to_J_kg*US%RZ_to_kg_m2 * CS%tv%frazil(i,j)
+    sfc_state%frazil(i,j) = CS%tv%frazil(i,j)
   enddo ; enddo ; endif
 
   ! copy Hml into sfc_state, so that caps can access it
@@ -3029,10 +3089,10 @@ subroutine extract_surface_state(CS, sfc_state_in)
       sfc_state%SSS(i,j) = CS%tv%S(i,j,1)
     enddo ; enddo ; endif
     do j=js,je ; do I=is-1,ie
-      sfc_state%u(I,j) = US%L_T_to_m_s * CS%u(I,j,1)
+      sfc_state%u(I,j) = CS%u(I,j,1)
     enddo ; enddo
     do J=js-1,je ; do i=is,ie
-      sfc_state%v(i,J) = US%L_T_to_m_s * CS%v(i,J,1)
+      sfc_state%v(i,J) = CS%v(i,J,1)
     enddo ; enddo
 
   else  ! (CS%Hmix >= 0.0)
@@ -3064,7 +3124,7 @@ subroutine extract_surface_state(CS, sfc_state_in)
           sfc_state%SST(i,j) = sfc_state%SST(i,j) + dh * CS%tv%T(i,j,k)
           sfc_state%SSS(i,j) = sfc_state%SSS(i,j) + dh * CS%tv%S(i,j,k)
         else
-          sfc_state%sfc_density(i,j) = sfc_state%sfc_density(i,j) + dh * US%R_to_kg_m3*GV%Rlay(k)
+          sfc_state%sfc_density(i,j) = sfc_state%sfc_density(i,j) + dh * GV%Rlay(k)
         endif
         depth(i) = depth(i) + dh
       enddo ; enddo
@@ -3088,7 +3148,7 @@ subroutine extract_surface_state(CS, sfc_state_in)
               sfc_state%SSS(i,j) = (sfc_state%SSS(i,j) + missing_depth*CS%tv%S(i,j,1)) * I_depth
             else
               sfc_state%sfc_density(i,j) = (sfc_state%sfc_density(i,j) + &
-                                            missing_depth*US%R_to_kg_m3*GV%Rlay(1)) * I_depth
+                                            missing_depth*GV%Rlay(1)) * I_depth
             endif
           else
             I_depth = 1.0 / depth(i)
@@ -3125,7 +3185,7 @@ subroutine extract_surface_state(CS, sfc_state_in)
           else
             dh = 0.0
           endif
-          sfc_state%v(i,J) = sfc_state%v(i,J) + dh * US%L_T_to_m_s * CS%v(i,J,k)
+          sfc_state%v(i,J) = sfc_state%v(i,J) + dh * CS%v(i,J,k)
           depth(i) = depth(i) + dh
         enddo ; enddo
         ! Calculate the average properties of the mixed layer depth.
@@ -3149,7 +3209,7 @@ subroutine extract_surface_state(CS, sfc_state_in)
           else
             dh = 0.0
           endif
-          sfc_state%u(I,j) = sfc_state%u(I,j) + dh * US%L_T_to_m_s * CS%u(I,j,k)
+          sfc_state%u(I,j) = sfc_state%u(I,j) + dh * CS%u(I,j,k)
           depth(I) = depth(I) + dh
         enddo ; enddo
         ! Calculate the average properties of the mixed layer depth.
@@ -3159,17 +3219,17 @@ subroutine extract_surface_state(CS, sfc_state_in)
       enddo ! end of j loop
     else ! Hmix_UV<=0.
       do j=js,je ; do I=is-1,ie
-        sfc_state%u(I,j) = US%L_T_to_m_s * CS%u(I,j,1)
+        sfc_state%u(I,j) = CS%u(I,j,1)
       enddo ; enddo
       do J=js-1,je ; do i=is,ie
-        sfc_state%v(i,J) = US%L_T_to_m_s * CS%v(i,J,1)
+        sfc_state%v(i,J) = CS%v(i,J,1)
       enddo ; enddo
     endif
   endif  ! (CS%Hmix >= 0.0)
 
 
   if (allocated(sfc_state%melt_potential)) then
-  !$OMP parallel do default(shared) private(depth_ml, dh, T_freeze, depth, delT)
+    !$OMP parallel do default(shared) private(depth_ml, dh, T_freeze, depth, delT)
     do j=js,je
       do i=is,ie
         depth(i) = 0.0
@@ -3178,8 +3238,8 @@ subroutine extract_surface_state(CS, sfc_state_in)
 
       do k=1,nz ; do i=is,ie
         depth_ml = min(CS%HFrz, CS%visc%MLD(i,j))
-        if (depth(i) + h(i,j,k)*GV%H_to_m < depth_ml) then
-          dh = h(i,j,k)*GV%H_to_m
+        if (depth(i) + h(i,j,k)*GV%H_to_Z < depth_ml) then
+          dh = h(i,j,k)*GV%H_to_Z
         elseif (depth(i) < depth_ml) then
           dh = depth_ml - depth(i)
         else
@@ -3197,8 +3257,8 @@ subroutine extract_surface_state(CS, sfc_state_in)
        sfc_state%melt_potential(i,j) = 0.0
 
        if (G%mask2dT(i,j)>0.) then
-         ! instantaneous melt_potential [J m-2]
-         sfc_state%melt_potential(i,j) = US%Q_to_J_kg*US%R_to_kg_m3 * CS%tv%C_p * GV%Rho0 * delT(i)
+         ! instantaneous melt_potential [Q R Z ~> J m-2]
+         sfc_state%melt_potential(i,j) = CS%tv%C_p * GV%Rho0 * delT(i)
        endif
       enddo
     enddo ! end of j loop
@@ -3208,31 +3268,31 @@ subroutine extract_surface_state(CS, sfc_state_in)
     !$OMP parallel do default(shared)
     do j=js,je ; do i=is,ie
       ! Convert from gSalt to kgSalt
-      sfc_state%salt_deficit(i,j) = 0.001 * US%RZ_to_kg_m2*CS%tv%salt_deficit(i,j)
+      sfc_state%salt_deficit(i,j) = 0.001 * CS%tv%salt_deficit(i,j)
     enddo ; enddo
   endif
   if (allocated(sfc_state%TempxPmE) .and. associated(CS%tv%TempxPmE)) then
     !$OMP parallel do default(shared)
     do j=js,je ; do i=is,ie
-      sfc_state%TempxPmE(i,j) = US%RZ_to_kg_m2*CS%tv%TempxPmE(i,j)
+      sfc_state%TempxPmE(i,j) = CS%tv%TempxPmE(i,j)
     enddo ; enddo
   endif
   if (allocated(sfc_state%internal_heat) .and. associated(CS%tv%internal_heat)) then
     !$OMP parallel do default(shared)
     do j=js,je ; do i=is,ie
-      sfc_state%internal_heat(i,j) = US%RZ_to_kg_m2*CS%tv%internal_heat(i,j)
+      sfc_state%internal_heat(i,j) = CS%tv%internal_heat(i,j)
     enddo ; enddo
   endif
   if (allocated(sfc_state%taux_shelf) .and. associated(CS%visc%taux_shelf)) then
     !$OMP parallel do default(shared)
     do j=js,je ; do I=is-1,ie
-      sfc_state%taux_shelf(I,j) = US%RZ_T_to_kg_m2s*US%L_T_to_m_s*CS%visc%taux_shelf(I,j)
+      sfc_state%taux_shelf(I,j) = CS%visc%taux_shelf(I,j)
     enddo ; enddo
   endif
   if (allocated(sfc_state%tauy_shelf) .and. associated(CS%visc%tauy_shelf)) then
     !$OMP parallel do default(shared)
     do J=js-1,je ; do i=is,ie
-      sfc_state%tauy_shelf(i,J) = US%RZ_T_to_kg_m2s*US%L_T_to_m_s*CS%visc%tauy_shelf(i,J)
+      sfc_state%tauy_shelf(i,J) = CS%visc%tauy_shelf(i,J)
     enddo ; enddo
   endif
 
@@ -3245,11 +3305,10 @@ subroutine extract_surface_state(CS, sfc_state_in)
     enddo ; enddo
     !$OMP parallel do default(shared) private(mass)
     do j=js,je ; do k=1,nz; do i=is,ie
-      mass = GV%H_to_kg_m2*h(i,j,k)
+      mass = GV%H_to_RZ*h(i,j,k)
       sfc_state%ocean_mass(i,j) = sfc_state%ocean_mass(i,j) + mass
-      sfc_state%ocean_heat(i,j) = sfc_state%ocean_heat(i,j) + mass*CS%tv%T(i,j,k)
-      sfc_state%ocean_salt(i,j) = sfc_state%ocean_salt(i,j) + &
-                              mass * (1.0e-3*CS%tv%S(i,j,k))
+      sfc_state%ocean_heat(i,j) = sfc_state%ocean_heat(i,j) + mass * CS%tv%T(i,j,k)
+      sfc_state%ocean_salt(i,j) = sfc_state%ocean_salt(i,j) + mass * (1.0e-3*CS%tv%S(i,j,k))
     enddo ; enddo ; enddo
   else
     if (allocated(sfc_state%ocean_mass)) then
@@ -3257,7 +3316,7 @@ subroutine extract_surface_state(CS, sfc_state_in)
       do j=js,je ; do i=is,ie ; sfc_state%ocean_mass(i,j) = 0.0 ; enddo ; enddo
       !$OMP parallel do default(shared)
       do j=js,je ; do k=1,nz ; do i=is,ie
-        sfc_state%ocean_mass(i,j) = sfc_state%ocean_mass(i,j) + GV%H_to_kg_m2*h(i,j,k)
+        sfc_state%ocean_mass(i,j) = sfc_state%ocean_mass(i,j) + GV%H_to_RZ*h(i,j,k)
       enddo ; enddo ; enddo
     endif
     if (allocated(sfc_state%ocean_heat)) then
@@ -3265,7 +3324,7 @@ subroutine extract_surface_state(CS, sfc_state_in)
       do j=js,je ; do i=is,ie ; sfc_state%ocean_heat(i,j) = 0.0 ; enddo ; enddo
       !$OMP parallel do default(shared) private(mass)
       do j=js,je ; do k=1,nz ; do i=is,ie
-        mass = GV%H_to_kg_m2*h(i,j,k)
+        mass = GV%H_to_RZ*h(i,j,k)
         sfc_state%ocean_heat(i,j) = sfc_state%ocean_heat(i,j) + mass*CS%tv%T(i,j,k)
       enddo ; enddo ; enddo
     endif
@@ -3274,9 +3333,8 @@ subroutine extract_surface_state(CS, sfc_state_in)
       do j=js,je ; do i=is,ie ; sfc_state%ocean_salt(i,j) = 0.0 ; enddo ; enddo
       !$OMP parallel do default(shared) private(mass)
       do j=js,je ; do k=1,nz ; do i=is,ie
-        mass = GV%H_to_kg_m2*h(i,j,k)
-        sfc_state%ocean_salt(i,j) = sfc_state%ocean_salt(i,j) + &
-                                mass * (1.0e-3*CS%tv%S(i,j,k))
+        mass = GV%H_to_RZ*h(i,j,k)
+        sfc_state%ocean_salt(i,j) = sfc_state%ocean_salt(i,j) + mass * (1.0e-3*CS%tv%S(i,j,k))
       enddo ; enddo ; enddo
     endif
   endif
@@ -3289,11 +3347,10 @@ subroutine extract_surface_state(CS, sfc_state_in)
     numberOfErrors=0 ! count number of errors
     do j=js,je; do i=is,ie
       if (G%mask2dT(i,j)>0.) then
-        bathy_m = CS%US%Z_to_m * G%bathyT(i,j)
-        localError = sfc_state%sea_lev(i,j)<=-bathy_m &
-                .or. sfc_state%sea_lev(i,j)>= CS%bad_val_ssh_max  &
-                .or. sfc_state%sea_lev(i,j)<=-CS%bad_val_ssh_max  &
-                .or. sfc_state%sea_lev(i,j) + bathy_m < CS%bad_val_col_thick
+        localError = sfc_state%sea_lev(i,j) <= -G%bathyT(i,j) &
+                .or. sfc_state%sea_lev(i,j) >=  CS%bad_val_ssh_max  &
+                .or. sfc_state%sea_lev(i,j) <= -CS%bad_val_ssh_max  &
+                .or. sfc_state%sea_lev(i,j) + G%bathyT(i,j) < CS%bad_val_col_thick
         if (use_temperature) localError = localError &
                 .or. sfc_state%SSS(i,j)<0.                        &
                 .or. sfc_state%SSS(i,j)>=CS%bad_val_sss_max       &
@@ -3309,18 +3366,18 @@ subroutine extract_surface_state(CS, sfc_state_in)
                 'Extreme surface sfc_state detected: i=',ig,'j=',jg, &
                 'lon=',G%geoLonT(i,j), 'lat=',G%geoLatT(i,j), &
                 'x=',G%gridLonT(ig), 'y=',G%gridLatT(jg), &
-                'D=',bathy_m,  'SSH=',sfc_state%sea_lev(i,j), &
+                'D=',CS%US%Z_to_m*G%bathyT(i,j),  'SSH=',CS%US%Z_to_m*sfc_state%sea_lev(i,j), &
                 'SST=',sfc_state%SST(i,j), 'SSS=',sfc_state%SSS(i,j), &
-                'U-=',sfc_state%u(I-1,j), 'U+=',sfc_state%u(I,j), &
-                'V-=',sfc_state%v(i,J-1), 'V+=',sfc_state%v(i,J)
+                'U-=',US%L_T_to_m_s*sfc_state%u(I-1,j), 'U+=',US%L_T_to_m_s*sfc_state%u(I,j), &
+                'V-=',US%L_T_to_m_s*sfc_state%v(i,J-1), 'V+=',US%L_T_to_m_s*sfc_state%v(i,J)
             else
               write(msg(1:240),'(2(a,i4,x),4(a,f8.3,x),6(a,es11.4))') &
                 'Extreme surface sfc_state detected: i=',ig,'j=',jg, &
                 'lon=',G%geoLonT(i,j), 'lat=',G%geoLatT(i,j), &
                 'x=',G%gridLonT(i), 'y=',G%gridLatT(j), &
-                'D=',bathy_m,  'SSH=',sfc_state%sea_lev(i,j), &
-                'U-=',sfc_state%u(I-1,j), 'U+=',sfc_state%u(I,j), &
-                'V-=',sfc_state%v(i,J-1), 'V+=',sfc_state%v(i,J)
+                'D=',CS%US%Z_to_m*G%bathyT(i,j),  'SSH=',CS%US%Z_to_m*sfc_state%sea_lev(i,j), &
+                'U-=',US%L_T_to_m_s*sfc_state%u(I-1,j), 'U+=',US%L_T_to_m_s*sfc_state%u(I,j), &
+                'V-=',US%L_T_to_m_s*sfc_state%v(i,J-1), 'V+=',US%L_T_to_m_s*sfc_state%v(i,J)
             endif
             call MOM_error(WARNING, trim(msg), all_print=.true.)
           elseif (numberOfErrors==9) then ! Indicate once that there are more errors
@@ -3337,7 +3394,7 @@ subroutine extract_surface_state(CS, sfc_state_in)
     endif
   endif
 
-  if (CS%debug) call MOM_surface_chksum("Post extract_sfc", sfc_state, G)
+  if (CS%debug) call MOM_surface_chksum("Post extract_sfc", sfc_state, G, US, haloshift=0)
 
   ! Rotate sfc_state back onto the input grid, sfc_state_in
   if (CS%rotate_index) then

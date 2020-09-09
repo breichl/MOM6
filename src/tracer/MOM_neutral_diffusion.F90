@@ -134,17 +134,17 @@ logical function neutral_diffusion_init(Time, G, US, param_file, diag, EOS, diab
     return
   endif
 
-
   ! Log this module and master switch for turning it on/off
+  call get_param(param_file, mdl, "USE_NEUTRAL_DIFFUSION", neutral_diffusion_init, &
+                 default=.false., do_not_log=.true.)
   call log_version(param_file, mdl, version, &
-       "This module implements neutral diffusion of tracers")
+           "This module implements neutral diffusion of tracers", &
+           all_default=.not.neutral_diffusion_init)
   call get_param(param_file, mdl, "USE_NEUTRAL_DIFFUSION", neutral_diffusion_init, &
                  "If true, enables the neutral diffusion module.", &
                  default=.false.)
 
-  if (.not.neutral_diffusion_init) then
-    return
-  endif
+  if (.not.neutral_diffusion_init) return
 
   allocate(CS)
   CS%diag => diag
@@ -180,7 +180,7 @@ logical function neutral_diffusion_init(Time, G, US, param_file, diag, EOS, diab
                    trim(remappingSchemesDoc), default=remappingDefaultScheme)
     call get_param(param_file, mdl, "DEFAULT_2018_ANSWERS", default_2018_answers, &
                  "This sets the default value for the various _2018_ANSWERS parameters.", &
-                 default=.true.)
+                 default=.false.)
     call get_param(param_file, mdl, "REMAPPING_2018_ANSWERS", CS%remap_answers_2018, &
                  "If true, use the order of arithmetic and expressions that recover the "//&
                  "answers from the end of 2018.  Otherwise, use updated and more robust "//&
@@ -297,7 +297,7 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, CS, p_surf)
   ! Variables used for reconstructions
   real, dimension(SZK_(G),2) :: ppoly_r_S       ! Reconstruction slopes
   real, dimension(SZI_(G), SZJ_(G)) :: hEff_sum ! Summed effective face thicknesses [H ~> m or kg m-2]
-  real, dimension(SZI_(G),SZJ_(G))  :: hbl      ! Boundary layer depth [m]
+  real, dimension(SZI_(G),SZJ_(G))  :: hbl      ! Boundary layer depth [H ~> m or kg m-2]
   integer :: iMethod
   real, dimension(SZI_(G)) :: ref_pres ! Reference pressure used to calculate alpha/beta [R L2 T-2 ~> Pa]
   real, dimension(SZI_(G)) :: rho_tmp  ! Routine to calculate drho_dp, returns density which is not used
@@ -312,13 +312,14 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, CS, p_surf)
   pa_to_H = 1. / (GV%H_to_RZ * GV%g_Earth)
 
   k_top(:,:) = 1     ; k_bot(:,:) = 1
-  zeta_top(:,:) = 0. ; zeta_bot(:,:) = 1.
+  zeta_top(:,:) = 0. ; zeta_bot(:,:) = 0.
 
   ! Check if hbl needs to be extracted
   if (CS%interior_only) then
     hbl(:,:) = 0.
-    if (ASSOCIATED(CS%KPP_CSp)) call KPP_get_BLD(CS%KPP_CSp, hbl, G)
-    if (ASSOCIATED(CS%energetic_PBL_CSp)) call energetic_PBL_get_MLD(CS%energetic_PBL_CSp, hbl, G, US)
+    if (ASSOCIATED(CS%KPP_CSp)) call KPP_get_BLD(CS%KPP_CSp, hbl, G, US, m_to_BLD_units=GV%m_to_H)
+    if (ASSOCIATED(CS%energetic_PBL_CSp)) &
+      call energetic_PBL_get_MLD(CS%energetic_PBL_CSp, hbl, G, US, m_to_MLD_units=GV%m_to_H)
     call pass_var(hbl, G%Domain)
     ! get k-indices and zeta
     do j=G%jsc-1, G%jec+1 ; do i=G%isc-1,G%iec+1
@@ -460,7 +461,7 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, CS, p_surf)
                 CS%Pint(i,j,:), CS%Tint(i,j,:), CS%Sint(i,j,:), CS%dRdT(i,j,:), CS%dRdS(i,j,:),            &
                 CS%Pint(i+1,j,:), CS%Tint(i+1,j,:), CS%Sint(i+1,j,:), CS%dRdT(i+1,j,:), CS%dRdS(i+1,j,:),  &
                 CS%uPoL(I,j,:), CS%uPoR(I,j,:), CS%uKoL(I,j,:), CS%uKoR(I,j,:), CS%uhEff(I,j,:),           &
-                k_bot(I,j), k_bot(I+1,j), 1.-zeta_bot(I,j), 1.-zeta_bot(I+1,j))
+                k_bot(I,j), k_bot(I+1,j), zeta_bot(I,j), zeta_bot(I+1,j))
       else
         call find_neutral_surface_positions_discontinuous(CS, G%ke, &
             CS%P_i(i,j,:,:), h(i,j,:), CS%T_i(i,j,:,:), CS%S_i(i,j,:,:), CS%ppoly_coeffs_T(i,j,:,:),           &
@@ -481,7 +482,7 @@ subroutine neutral_diffusion_calc_coeffs(G, GV, US, h, T, S, CS, p_surf)
                 CS%Pint(i,j,:), CS%Tint(i,j,:), CS%Sint(i,j,:), CS%dRdT(i,j,:), CS%dRdS(i,j,:),           &
                 CS%Pint(i,j+1,:), CS%Tint(i,j+1,:), CS%Sint(i,j+1,:), CS%dRdT(i,j+1,:), CS%dRdS(i,j+1,:), &
                 CS%vPoL(i,J,:), CS%vPoR(i,J,:), CS%vKoL(i,J,:), CS%vKoR(i,J,:), CS%vhEff(i,J,:), &
-                k_bot(i,J), k_bot(i,J+1), 1.-zeta_bot(i,J), 1.-zeta_bot(i,J+1))
+                k_bot(i,J), k_bot(i,J+1), zeta_bot(i,J), zeta_bot(i,J+1))
       else
         call find_neutral_surface_positions_discontinuous(CS, G%ke, &
             CS%P_i(i,j,:,:), h(i,j,:), CS%T_i(i,j,:,:), CS%S_i(i,j,:,:), CS%ppoly_coeffs_T(i,j,:,:),           &
