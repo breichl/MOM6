@@ -372,7 +372,7 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn)
   if (OS%use_waves) then
     call MOM_wave_interface_init(OS%Time, OS%grid, OS%GV, OS%US, param_file, OS%Waves, OS%diag)
   else
-    call MOM_wave_interface_init_lite(param_file)
+    call MOM_wave_interface_init_lite(OS%Waves,OS%diag,param_file)
   endif
 
   if (associated(OS%grid%Domain%maskmap)) then

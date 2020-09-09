@@ -343,7 +343,7 @@ program MOM_main
   if (use_waves) then
     call MOM_wave_interface_init(Time, grid, GV, US, param_file, Waves_CSp, diag)
   else
-    call MOM_wave_interface_init_lite(param_file)
+    call MOM_wave_interface_init_lite(Waves_CSp,diag,param_file)
   endif
 
   segment_start_time = Time
