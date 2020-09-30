@@ -87,6 +87,7 @@ type, public :: Kappa_shear_CS ; private
                              !! time average TKE when there is mass in all layers.  Otherwise always
                              !! report the time-averaged TKE, as is currently done when there
                              !! are some massless layers.
+  logical :: Use_Old_Tolerance_Check
 !  logical :: layer_stagger = .false. ! If true, do the calculations centered at
                              !  layers, rather than the interfaces.
   logical :: debug = .false. !< If true, write verbose debugging messages.
@@ -898,7 +899,7 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
     ! Determine how long to use this value of kappa (dt_now).
 
   ! call cpu_clock_begin(id_clock_project)
-    if ((ke_kappa < ks_kappa) .or. (itt==CS%max_RiNo_it)) then
+    if ((ke_kappa < ks_kappa) .or. (itt==CS%max_KS_it)) then
       dt_now = dt_rem
     else
       ! Limit dt_now so that |k_src(k)-kappa_src(k)| < tol * local_src(k)
@@ -926,10 +927,17 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
         do K=max(ks_kappa-1,2),min(ke_kappa+1,nzc)
           if (N2(K) < Ri_crit * S2(K)) then ! Equivalent to Ri < Ri_crit.
             K_src(K) = (2.0 * CS%Shearmix_rate * sqrt(S2(K))) * &
-                       ((Ri_crit*S2(K) - N2(K)) / (Ri_crit*S2(K) + CS%FRi_curvature*N2(K)))
-            if ((K_src(K) > max(tol_max(K), kappa_src(K) + Idtt*tol_chg(K))) .or. &
-                (K_src(K) < min(tol_min(K), kappa_src(K) - Idtt*tol_chg(K)))) then
-              valid_dt = .false. ; exit
+                 ((Ri_crit*S2(K) - N2(K)) / (Ri_crit*S2(K) + CS%FRi_curvature*N2(K)))
+            if (CS%Use_Old_Tolerance_Check) then
+              if ((K_src(K) > max(tol_max(K), kappa_src(K) + Idtt*tol_chg(K))) .or. &
+                  (K_src(K) < min(tol_min(K), kappa_src(K) - Idtt*tol_chg(K)))) then
+                valid_dt = .false. ; exit
+              endif
+            else
+              if ((K_src(K) > min(tol_max(K), kappa_src(K) + Idtt*tol_chg(K))) .or. &
+                  (K_src(K) < max(tol_min(K), kappa_src(K) - Idtt*tol_chg(K)))) then
+                valid_dt = .false. ; exit
+              endif
             endif
           else
             if (0.0 < min(tol_min(K), kappa_src(K) - Idtt*tol_chg(K))) then
@@ -1914,6 +1922,11 @@ function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
                  "TKE when there is mass in all layers.  Otherwise always report the time "//&
                  "averaged TKE, as is currently done when there are some massless layers.", &
                  default=.false., do_not_log=just_read)
+    call get_param(param_file, mdl, "USE_OLD_TOLERANCE_CHECK", CS%Use_Old_Tolerance_Check, &
+                 "If true, use an old method for checking for the tolerance if a time step "//&
+                 "is valid using the less restrictive of two conditional checks, instead of "//&
+                 "the more restrictive.", &
+                 default=.true., do_not_log=just_read)
 !    id_clock_KQ = cpu_clock_id('Ocean KS kappa_shear', grain=CLOCK_ROUTINE)
 !    id_clock_avg = cpu_clock_id('Ocean KS avg', grain=CLOCK_ROUTINE)
 !    id_clock_project = cpu_clock_id('Ocean KS project', grain=CLOCK_ROUTINE)
