@@ -80,6 +80,9 @@ type, public :: Kappa_shear_CS ; private
                              !! greater than 1.  The lower limit for the permitted fractional
                              !! decrease is (1 - 0.5/kappa_src_max_chg).  These limits could
                              !! perhaps be made dynamic with an improved iterative solver.
+  real    :: PRmax           !< Maximum Prandtl Number for Schumann and Gerz 1995 function
+  real    :: PR0             !< Prandtl number at Rig = 0 for SG95 function
+  real    :: Ri_infty        !< Ri^infty in SG95 function
   logical :: psurf_bug       !< If true, do a simple average of the cell surface pressures to get a
                              !! surface pressure at the corner if VERTEX_SHEAR=True.  Otherwise mask
                              !! out any land points in the average.
@@ -91,6 +94,7 @@ type, public :: Kappa_shear_CS ; private
                              !! determine if a timestep is acceptable for the KS_it outer iteration
                              !! loop, as the code was originally written.  True uses the more
                              !! restrictive check.
+  logical :: Prandtl_SG95    !! Use the Prandtl number of F(Ri) from Schumann and Gerz 1995
 
 !  logical :: layer_stagger = .false. ! If true, do the calculations centered at
                              !  layers, rather than the interfaces.
@@ -148,7 +152,8 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
     T_2d, S_2d, rho_2d  ! 2-D versions of T [degC], S [ppt], and rho [R ~> kg m-3].
   real, dimension(SZI_(G),SZK_(GV)+1) :: &
     kappa_2d, & ! 2-D version of kappa_io [Z2 T-1 ~> m2 s-1].
-    tke_2d      ! 2-D version tke_io [Z2 T-2 ~> m2 s-2].
+    tke_2d , &  ! 2-D version tke_io [Z2 T-2 ~> m2 s-2].
+    Prandtl_2d  ! 2-D version Prandtl number from SG95
   real, dimension(SZK_(GV)) :: &
     Idz, &      ! The inverse of the distance between TKE points [Z-1 ~> m-1].
     dz, &       ! The layer thickness [Z ~> m].
@@ -160,7 +165,8 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
     kappa, &    ! The shear-driven diapycnal diffusivity at an interface [Z2 T-1 ~> m2 s-1].
     tke, &      ! The Turbulent Kinetic Energy per unit mass at an interface [Z2 T-2 ~> m2 s-2].
     kappa_avg, & ! The time-weighted average of kappa [Z2 T-1 ~> m2 s-1].
-    tke_avg     ! The time-weighted average of TKE [Z2 T-2 ~> m2 s-2].
+    tke_avg, &  ! The time-weighted average of TKE [Z2 T-2 ~> m2 s-2].
+    Prandtl     ! The Prandtl number from SG95
   real :: f2   ! The squared Coriolis parameter of each column [T-2 ~> s-2].
   real :: surface_pres  ! The top surface pressure [R L2 T-2 ~> Pa].
 
@@ -202,6 +208,9 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
     if (.not.new_kappa) then ; do K=1,nz+1 ; do i=is,ie
       kappa_2d(i,K) = kappa_io(i,j,K)
     enddo ; enddo ; endif
+    do K=1,nz+1 ; do i=is,ie
+      Prandtl_2d(i,K) = CS%PRmax
+    enddo ; enddo
 
 !---------------------------------------
 ! Work on each column.
@@ -287,13 +296,14 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
 
       call kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
                               dz, u0xdz, v0xdz, T0xdz, S0xdz, kappa_avg, &
-                              tke_avg, tv, CS, GV, US)
+                              tke_avg, tv, CS, GV, US, Prandtl_SG = Prandtl)
 
     ! call cpu_clock_begin(id_clock_setup)
     ! Extrapolate from the vertically reduced grid back to the original layers.
       if (nz == nzc) then
         do K=1,nz+1
           kappa_2d(i,K) = kappa_avg(K)
+          Prandtl_2d(i,K) = Prandtl(K)
           if (CS%all_layer_TKE_bug) then
             tke_2d(i,K) = tke(K)
           else
@@ -304,10 +314,13 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
         do K=1,nz+1
           if (kf(K) == 0.0) then
             kappa_2d(i,K) = kappa_avg(kc(K))
+            Prandtl_2d(i,K) = Prandtl(kc(K))
             tke_2d(i,K) = tke_avg(kc(K))
           else
             kappa_2d(i,K) = (1.0-kf(K)) * kappa_avg(kc(K)) + &
-                             kf(K) * kappa_avg(kc(K)+1)
+                           kf(K) * kappa_avg(kc(K)+1)
+            Prandtl_2d(i,K) = (1.0-kf(K)) * Prandtl(kc(K)) + &
+                           kf(K) * Prandtl(kc(K)+1)
             tke_2d(i,K) = (1.0-kf(K)) * tke_avg(kc(K)) + &
                            kf(K) * tke_avg(kc(K)+1)
           endif
@@ -316,15 +329,23 @@ subroutine Calculate_kappa_shear(u_in, v_in, h, tv, p_surf, kappa_io, tke_io, &
     ! call cpu_clock_end(id_clock_setup)
     else  ! Land points, still inside the i-loop.
       do K=1,nz+1
-        kappa_2d(i,K) = 0.0 ; tke_2d(i,K) = 0.0
+        kappa_2d(i,K) = 0.0 ; tke_2d(i,K) = 0.0 ; Prandtl_2d(i,K) = 0.0
       enddo
     endif ; enddo ! i-loop
 
-    do K=1,nz+1 ; do i=is,ie
-      kappa_io(i,j,K) = G%mask2dT(i,j) * kappa_2d(i,K)
-      tke_io(i,j,K) = G%mask2dT(i,j) * tke_2d(i,K)
-      kv_io(i,j,K) = ( G%mask2dT(i,j) * kappa_2d(i,K) ) * CS%Prandtl_turb
-    enddo ; enddo
+    if (CS%Prandtl_SG95) then
+      do K=1,nz+1 ; do i=is,ie
+        kappa_io(i,j,K) = G%mask2dT(i,j) * kappa_2d(i,K)
+        tke_io(i,j,K) = G%mask2dT(i,j) * tke_2d(i,K)
+        kv_io(i,j,K) = ( G%mask2dT(i,j) * kappa_2d(i,K) ) * Prandtl_2d(i,K)
+      enddo; enddo
+    else
+      do K=1,nz+1 ; do i=is,ie
+        kappa_io(i,j,K) = G%mask2dT(i,j) * kappa_2d(i,K)
+        tke_io(i,j,K) = G%mask2dT(i,j) * tke_2d(i,K)
+        kv_io(i,j,K) = ( G%mask2dT(i,j) * kappa_2d(i,K) ) * CS%Prandtl_turb
+      enddo; enddo
+    endif
 
   enddo ! end of j-loop
 
@@ -386,6 +407,8 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
     kappa_2d    ! Quasi 2-D versions of kappa_io [Z2 T-1 ~> m2 s-1].
   real, dimension(SZIB_(G),SZK_(GV)+1) :: &
     tke_2d      ! 2-D version tke_io [Z2 T-2 ~> m2 s-2].
+  real, dimension(SZIB_(G),SZK_(GV)+1) :: &
+    Prandtl_2d      ! 2-D version Prandtl
   real, dimension(SZK_(GV)) :: &
     Idz, &      ! The inverse of the distance between TKE points [Z-1 ~> m-1].
     dz, &       ! The layer thickness [Z ~> m].
@@ -397,7 +420,8 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
     kappa, &    ! The shear-driven diapycnal diffusivity at an interface [Z2 T-1 ~> m2 s-1].
     tke, &      ! The Turbulent Kinetic Energy per unit mass at an interface [Z2 T-2 ~> m2 s-2].
     kappa_avg, & ! The time-weighted average of kappa [Z2 T-1 ~> m2 s-1].
-    tke_avg     ! The time-weighted average of TKE [Z2 T-2 ~> m2 s-2].
+    tke_avg, &  ! The time-weighted average of TKE [Z2 T-2 ~> m2 s-2].
+    Prandtl     ! The Prandtl number from SG95
   real :: f2   ! The squared Coriolis parameter of each column [T-2 ~> s-2].
   real :: surface_pres  ! The top surface pressure [R L2 T-2 ~> Pa].
 
@@ -471,6 +495,9 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
     if (.not.new_kappa) then ; do K=1,nz+1 ; do I=IsB,IeB
       kappa_2d(I,K,J2) = kv_io(I,J,K) * I_Prandtl
     enddo ; enddo ; endif
+    do K=1,nz+1 ; do I=IsB,IeB
+      Prandtl_2d(I,K) = CS%PRmax
+    enddo ; enddo
 
 !---------------------------------------
 ! Work on each column.
@@ -567,12 +594,13 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
 
       call kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
                               dz, u0xdz, v0xdz, T0xdz, S0xdz, kappa_avg, &
-                              tke_avg, tv, CS, GV, US)
+                              tke_avg, tv, CS, GV, US, Prandtl_SG = Prandtl)
     ! call cpu_clock_begin(Id_clock_setup)
     ! Extrapolate from the vertically reduced grid back to the original layers.
       if (nz == nzc) then
         do K=1,nz+1
           kappa_2d(I,K,J2) = kappa_avg(K)
+          Prandtl_2d(I,K) = Prandtl(K)
           if (CS%all_layer_TKE_bug) then
             tke_2d(i,K) = tke(K)
           else
@@ -584,23 +612,32 @@ subroutine Calc_kappa_shear_vertex(u_in, v_in, h, T_in, S_in, tv, p_surf, kappa_
           if (kf(K) == 0.0) then
             kappa_2d(I,K,J2) = kappa_avg(kc(K))
             tke_2d(I,K) = tke_avg(kc(K))
+            Prandtl_2d(I,K) = Prandtl(kc(K))
           else
             kappa_2d(I,K,J2) = (1.0-kf(K)) * kappa_avg(kc(K)) + kf(K) * kappa_avg(kc(K)+1)
             tke_2d(I,K) = (1.0-kf(K)) * tke_avg(kc(K)) + kf(K) * tke_avg(kc(K)+1)
+            Prandtl_2d(I,K) = (1.0-kf(K)) * Prandtl(kc(K)) + kf(K) * Prandtl(kc(K)+1)
           endif
         enddo
       endif
     ! call cpu_clock_end(Id_clock_setup)
     else  ! Land points, still inside the i-loop.
       do K=1,nz+1
-        kappa_2d(I,K,J2) = 0.0 ; tke_2d(I,K) = 0.0
+        kappa_2d(I,K,J2) = 0.0 ; tke_2d(I,K) = 0.0 ; Prandtl_2d(I,K) = 0.0 ;
       enddo
     endif ; enddo ! i-loop
 
-    do K=1,nz+1 ; do I=IsB,IeB
-      tke_io(I,J,K) = G%mask2dBu(I,J) * tke_2d(I,K)
-      kv_io(I,J,K) = ( G%mask2dBu(I,J) * kappa_2d(I,K,J2) ) * CS%Prandtl_turb
-    enddo ; enddo
+    if (CS%Prandtl_SG95) then
+      do K=1,nz+1 ; do I=IsB,IeB
+        tke_io(I,J,K) = G%mask2dBu(I,J) * tke_2d(I,K)
+        kv_io(I,J,K) = ( G%mask2dBu(I,J) * kappa_2d(I,K,J2) ) * Prandtl_2d(I,K)
+      enddo; enddo
+    else
+      do K=1,nz+1 ; do I=IsB,IeB
+        tke_io(I,J,K) = G%mask2dBu(I,J) * tke_2d(I,K)
+        kv_io(I,J,K) = ( G%mask2dBu(I,J) * kappa_2d(I,K,J2) ) * CS%Prandtl_turb
+      enddo; enddo
+    endif
     if (J>=G%jsc) then ; do K=1,nz+1 ; do i=G%isc,G%iec
       ! Set the diffusivities in tracer columns from the values at vertices.
       kappa_io(i,j,K) = G%mask2dT(i,j) * 0.25 * &
@@ -624,7 +661,8 @@ end subroutine Calc_kappa_shear_vertex
 !> This subroutine calculates shear-driven diffusivity and TKE in a single column
 subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
                               dz, u0xdz, v0xdz, T0xdz, S0xdz, kappa_avg, &
-                              tke_avg, tv, CS, GV, US, I_Ld2_1d, dz_Int_1d)
+                              tke_avg, tv, CS, GV, US, I_Ld2_1d, dz_Int_1d, &
+                              Prandtl_SG)
   type(verticalGrid_type), intent(in)    :: GV !< The ocean's vertical grid structure.
   real, dimension(SZK_(GV)+1), &
                      intent(inout) :: kappa !< The time-weighted average of kappa [Z2 T-1 ~> m2 s-1].
@@ -659,7 +697,9 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
            optional, intent(out)   :: I_Ld2_1d !< The inverse of the squared mixing length [Z-2 ~> m-2].
   real,  dimension(SZK_(GV)+1), &
            optional, intent(out)   :: dz_Int_1d !< The extent of a finite-volume space surrounding an interface,
-                                               !! as used in calculating kappa and TKE [Z ~> m].
+                                                !! as used in calculating kappa and TKE [Z ~> m].
+    real,  dimension(SZK_(GV)+1), &
+           optional, intent(out)   :: Prandtl_SG !< An output column of Prandtl number from Richardson number
 
   ! Local variables
   real, dimension(nzc) :: &
@@ -1061,6 +1101,14 @@ subroutine kappa_shear_column(kappa, tke, dt, nzc, f2, surface_pres, &
 
   enddo ! end itt loop
 
+  if (present(Prandtl_SG)) then
+    do K=1,GV%ke+1 ; Prandtl_SG(K) = CS%PRmax ; enddo
+    do K=2,GV%ke
+      if (S2(K)>0.0) then
+        Prandtl_SG(K) = min(CS%PRmax,CS%PR0*exp(-N2(K)/(S2(K)*CS%PR0*CS%Ri_infty))+N2(K)/(S2(k)*CS%Ri_infty))
+      endif
+    enddo
+  endif
   if (present(I_Ld2_1d)) then
     do K=1,GV%ke+1 ; I_Ld2_1d(K) = 0.0 ; enddo
     do K=2,nzc ; if (TKE(K) > 0.0) &
@@ -1894,6 +1942,18 @@ function kappa_shear_init(Time, G, GV, US, param_file, diag, CS)
   call get_param(param_file, mdl, "PRANDTL_TURB", CS%Prandtl_turb, &
                  "The turbulent Prandtl number applied to shear instability.", &
                  units="nondim", default=1.0, do_not_log=.true.)
+  call get_param(param_file, mdl, "PRANDTL_SG95", CS%Prandtl_SG95, &
+                 "Use a varying Prandtl number as a function of Ri.", &
+                 default=.false.)
+  call get_param(param_file, mdl, "SG95_PRANDTL0", CS%PR0, &
+                 "PR0 in the Schumann and Gerz Prandtl number function.", &
+                 units="nondim", default=0.74)
+  call get_param(param_file, mdl, "SG95_RI_INFTY", CS%Ri_infty, &
+                 "Ri^infty in the Schumann and Gerz Prandtl number function.", &
+                 units="nondim", default=0.25)
+  call get_param(param_file, mdl, "SG95_PRANDTL_CAP", CS%PRmax, &
+                 "Prandtl number cap for the Schumann and Gerz Prandtl number function.", &
+                 units="nondim", default=3.0)
   call get_param(param_file, mdl, "VEL_UNDERFLOW", CS%vel_underflow, &
                  "A negligibly small velocity magnitude below which velocity components are set "//&
                  "to 0.  A reasonable value might be 1e-30 m/s, which is less than an "//&

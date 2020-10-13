@@ -16,6 +16,7 @@ use MOM_grid, only : ocean_grid_type
 use MOM_hor_index, only : hor_index_type
 use MOM_io, only : slasher, MOM_read_data
 use MOM_kappa_shear, only : kappa_shear_is_used, kappa_shear_at_vertex
+use MOM_GOTM, only : GOTM_at_vertex
 use MOM_cvmix_shear, only : cvmix_shear_is_used
 use MOM_cvmix_conv,  only : cvmix_conv_is_used
 use MOM_CVMix_ddiff, only : CVMix_ddiff_is_used
@@ -1739,7 +1740,7 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
                                                        !! Allocated here.
   type(MOM_restart_CS),    pointer       :: restart_CS !< A pointer to the restart control structure.
   ! Local variables
-  logical :: use_kappa_shear, KS_at_vertex
+  logical :: use_kappa_shear, KS_at_vertex, GTM_at_vertex
   logical :: adiabatic, useKPP, useEPBL, useGOTM
   logical :: use_CVMix_shear, MLE_use_PBL_MLD, use_CVMix_conv
   integer :: isd, ied, jsd, jed, nz
@@ -1751,11 +1752,12 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
                  do_not_log=.true.)
 
   use_kappa_shear = .false. ; KS_at_vertex = .false. ; use_CVMix_shear = .false.
-  useKPP = .false. ; useEPBL = .false. ; use_CVMix_conv = .false. ; useGOTM = .false.
+  useKPP = .false. ; useEPBL = .false. ; use_CVMix_conv = .false. ; useGOTM = .false. ; GTM_at_vertex = .false.
 
   if (.not.adiabatic) then
     use_kappa_shear = kappa_shear_is_used(param_file)
     KS_at_vertex    = kappa_shear_at_vertex(param_file)
+    GTM_at_vertex    = GOTM_at_vertex(param_file)
     use_CVMix_shear = CVMix_shear_is_used(param_file)
     use_CVMix_conv  = CVMix_conv_is_used(param_file)
     call get_param(param_file, mdl, "USE_KPP", useKPP, &
@@ -1776,13 +1778,14 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
     call register_restart_field(visc%Kd_shear, "Kd_shear", .false., restart_CS, &
                   "Shear-driven turbulent diffusivity at interfaces", "m2 s-1", z_grid='i')
   endif
-  if (useKPP .or. useEPBL .or. use_CVMix_shear .or. use_CVMix_conv .or. useGOTM .or. &
-      (use_kappa_shear .and. .not.KS_at_vertex )) then
+  if (useKPP .or. useEPBL .or. use_CVMix_shear .or. use_CVMix_conv .or. &
+       (use_kappa_shear.and.(.not.KS_at_vertex)) .or. &
+       (useGOTM.and.(.not.GTM_at_vertex ))) then
     call safe_alloc_ptr(visc%Kv_shear, isd, ied, jsd, jed, nz+1)
     call register_restart_field(visc%Kv_shear, "Kv_shear", .false., restart_CS, &
                   "Shear-driven turbulent viscosity at interfaces", "m2 s-1", z_grid='i')
   endif
-  if (use_kappa_shear .and. KS_at_vertex) then
+  if ((use_kappa_shear.and.KS_at_vertex).or.(useGOTM.and.GTM_at_vertex)) then
     call safe_alloc_ptr(visc%TKE_turb, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)
     call safe_alloc_ptr(visc%Kv_shear_Bu, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)
     call register_restart_field(visc%Kv_shear_Bu, "Kv_shear_Bu", .false., restart_CS, &

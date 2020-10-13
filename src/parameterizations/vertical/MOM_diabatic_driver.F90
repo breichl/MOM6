@@ -42,7 +42,7 @@ use MOM_file_parser,         only : get_param, log_version, param_file_type, rea
 use MOM_forcing_type,        only : forcing, MOM_forcing_chksum
 use MOM_forcing_type,        only : calculateBuoyancyFlux2d, forcing_SinglePointPrint
 use MOM_geothermal,          only : geothermal, geothermal_init, geothermal_end, geothermal_CS
-use MOM_GOTM,                only : GOTM_CS, GOTM_init, GOTM_calculate
+use MOM_GOTM,                only : GOTM_CS, GOTM_init, GOTM_calculate, GOTM_calculate_vertex
 use MOM_grid,                only : ocean_grid_type
 use MOM_int_tide_input,      only : set_int_tide_input, int_tide_input_init
 use MOM_int_tide_input,      only : int_tide_input_end, int_tide_input_CS, int_tide_input_type
@@ -165,6 +165,7 @@ type, public:: diabatic_CS; private
   logical :: tracer_tridiag          !< If true, use tracer_vertdiff instead of tridiagTS for
                                      !< vertical diffusion of T and S
   logical :: debug_energy_req        !< If true, test the mixing energy requirement code.
+  logical :: Vertex_shear            !< BGR add descriptions
   type(diag_ctrl), pointer :: diag   !< structure used to regulate timing of diagnostic output
   real :: MLDdensityDifference       !< Density difference used to determine MLD_user [R ~> kg m-3]
   real :: dz_subML_N2                !< The distance over which to calculate a diagnostic of the
@@ -768,8 +769,13 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
       Kd_salt(i,j,k) = Kd_int(i,j,k)
       Kd_heat(i,j,k) = Kd_int(i,j,k)
     enddo; enddo ; enddo
-    call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
-          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
+    if (CS%Vertex_shear) then
+      call GOTM_calculate_vertex(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+           fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear_Bu )
+    else
+      call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+           fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
+    endif
 !$OMP end parallel
 !$OMP do
     do k=1,nz+1 ; do j=js,je ; do i=is,ie
@@ -1562,8 +1568,13 @@ subroutine diabatic_ALE(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, 
       Kd_salt(i,j,k) = Kd_int(i,j,k)
       Kd_heat(i,j,k) = Kd_int(i,j,k)
     enddo; enddo ; enddo
-    call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
-          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
+    if (CS%Vertex_shear) then
+      call GOTM_calculate_vertex(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+           fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear_Bu )
+    else
+      call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+           fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
+    endif
 !$OMP end parallel
 !$OMP do
     do k=1,nz+1 ; do j=js,je ; do i=is,ie
@@ -2290,8 +2301,13 @@ subroutine layered_diabatic(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_e
       Kd_salt(i,j,k) = Kd_int(i,j,k)
       Kd_heat(i,j,k) = Kd_int(i,j,k)
     enddo; enddo ; enddo
-    call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
-          fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
+    if (CS%Vertex_shear) then
+      call GOTM_calculate_vertex(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+           fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear_Bu )
+    else
+      call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+           fluxes%ustar, Kd_heat, Kd_salt, visc%Kv_shear )
+    endif
 !$OMP end parallel
 !$OMP do
     do k=1,nz+1 ; do j=js,je ; do i=is,ie
@@ -3419,6 +3435,9 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 
   call get_param(param_file, mdl, "DEBUG_ENERGY_REQ", CS%debug_energy_req, &
                  "If true, debug the energy requirements.", default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "VERTEX_SHEAR", CS%Vertex_Shear, &
+                 "If true, do boundary layer mixing on the vertex points.", &
+                 default=.false., do_not_log=.true.) !How to log this here?
   call get_param(param_file, mdl, "MIX_BOUNDARY_TRACERS", CS%mix_boundary_tracers, &
                  "If true, mix the passive tracers in massless layers at "//&
                  "the bottom into the interior as though a diffusivity of "//&

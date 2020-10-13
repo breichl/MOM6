@@ -26,6 +26,8 @@ implicit none ; private
 
 public :: GOTM_init      ! Allocate the control structure and read inputs.
 public :: GOTM_calculate ! Interface MOM to GOTM turbulence.
+public :: GOTM_calculate_vertex ! Interface MOM to GOTM turbulence.
+public :: GOTM_at_vertex
 public :: GOTM_end       ! Gracefully deallocate the control structure.
 
 !/
@@ -58,7 +60,7 @@ type, public :: GOTM_CS ; private
   real :: minK = 1.e-4
 
   integer :: NSubCycle
-  
+
   ! Diagnostic handles and pointers
   type(diag_ctrl), pointer :: diag => NULL()
   integer :: id_TKE = -1
@@ -100,6 +102,7 @@ logical function GOTM_init(paramFile, G, diag, Time, CS, passive)
   character(len=40) :: mod = 'MOM_GOTM' ! name of this module
   character(len=20) :: string          ! local temporary string
   integer :: namlst=10
+  logical :: VS
   if (associated(CS)) call MOM_error(FATAL, 'MOM_KPP, KPP_init: '// &
            'Control structure has already been initialized')
   allocate(CS)
@@ -114,39 +117,69 @@ logical function GOTM_init(paramFile, G, diag, Time, CS, passive)
   if (.not. GOTM_init) return
   call get_param(paramFile, mod, "GOTM_NSUBCYCLE", CS%NSubCycle, &
        "Number of times to cycle GOTM per timestep. ", default=1)
-
-  !Allocate on grid center of computational domain indices
-  ! Note the allocated values will not matter, on first time step
-  ! completion all values are set to GOTM values.  GOTM handles initialization.
-  ALLOC_ (CS%TKE(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%TKE(:,:,:) = 0.0
-  ALLOC_ (CS%EPS(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%EPS(:,:,:) = 0.0
-  ALLOC_ (CS%L(SZI_(G), SZJ_(G), SZK_(G)+1))  ; CS%L(:,:,:)    = 0.0
-  ALLOC_ (CS%KV(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%KV(:,:,:) = 0.0
-  ALLOC_ (CS%KS(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%KS(:,:,:) = 0.0
-  ALLOC_ (CS%KT(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%KT(:,:,:) = 0.0
-  ! To use KE conserving shear we store old u/v
-  ALLOC_ (CS%UO(SZIB_(G), SZJ_(G), SZK_(G))) ; CS%Uo(:,:,:) = 0.0
-  ALLOC_ (CS%VO(SZI_(G), SZJB_(G), SZK_(G))) ; CS%Vo(:,:,:) = 0.0
+  call get_param(paramFile, mod, "VERTEX_SHEAR", VS, &
+       "Checking Vertex Shear, not logged. ", &
+       default=.false.,do_not_log=.true.)
 
   ! Call GOTM initialization, which reads the gotmturb.nml namelist file
   call init_turbulence (namlst,'gotmturb.nml',G%Ke)
   ! Initialize the GOTM tridiagonal solver, which is used within the GOTM
   ! turbulence evolution and therefore kept distinct from the MOM routine.
   call init_tridiagonal (G%Ke)
-  ! Fill the GOTM initial condition to all grid points
-  do j = G%jsc, G%jec
-    do i = G%isc, G%iec
-      do k=1,G%ke+1
-        kgotm=G%ke-k+1
-        CS%Kv(i,j,k)  = g_Kdm(kgotm)
-        CS%Kt(i,j,k)  = g_Kdt(kgotm)
-        CS%Ks(i,j,k)  = g_Kds(kgotm)
-        CS%TKE(i,j,k) = g_TKE(kgotm)
-        CS%EPS(i,j,k) = g_EPS(kgotm)
-        CS%L(i,j,k)   = g_l(kgotm)
+
+  !Allocate on grid center of computational domain indices
+  ! Note the allocated values will not matter, on first time step
+  ! completion all values are set to GOTM values.  GOTM handles initialization.
+  if (VS) then
+    ALLOC_ (CS%TKE(SZIB_(G), SZJB_(G), SZK_(G)+1)) ; CS%TKE(:,:,:) = 0.0
+    ALLOC_ (CS%EPS(SZIB_(G), SZJB_(G), SZK_(G)+1)) ; CS%EPS(:,:,:) = 0.0
+    ALLOC_ (CS%L(SZIB_(G), SZJB_(G), SZK_(G)+1))  ; CS%L(:,:,:)    = 0.0
+    ALLOC_ (CS%KV(SZIB_(G), SZJB_(G), SZK_(G)+1)) ; CS%KV(:,:,:) = 0.0
+    ALLOC_ (CS%KS(SZIB_(G), SZJB_(G), SZK_(G)+1)) ; CS%KS(:,:,:) = 0.0
+    ALLOC_ (CS%KT(SZIB_(G), SZJB_(G), SZK_(G)+1)) ; CS%KT(:,:,:) = 0.0
+    ! To use KE conserving shear we store old u/v (not allocated, not used, needs work)
+    !ALLOC_ (CS%UO(SZIB_(G), SZJB_(G), SZK_(G))) ; CS%Uo(:,:,:) = 0.0
+    !ALLOC_ (CS%VO(SZIB_(G), SZJB_(G), SZK_(G))) ; CS%Vo(:,:,:) = 0.0
+    ! Fill the GOTM initial condition to all grid points
+    do j = G%jsc-1, G%jecB
+      do i = G%isc-1, G%iecB
+        do k=1,G%ke+1
+          kgotm=G%ke-k+1
+          CS%Kv(i,j,k)  = g_Kdm(kgotm)
+          CS%Kt(i,j,k)  = g_Kdt(kgotm)
+          CS%Ks(i,j,k)  = g_Kds(kgotm)
+          CS%TKE(i,j,k) = g_TKE(kgotm)
+          CS%EPS(i,j,k) = g_EPS(kgotm)
+          CS%L(i,j,k)   = g_l(kgotm)
+        enddo
       enddo
     enddo
-  enddo
+  else
+    ALLOC_ (CS%TKE(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%TKE(:,:,:) = 0.0
+    ALLOC_ (CS%EPS(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%EPS(:,:,:) = 0.0
+    ALLOC_ (CS%L(SZI_(G), SZJ_(G), SZK_(G)+1))  ; CS%L(:,:,:)    = 0.0
+    ALLOC_ (CS%KV(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%KV(:,:,:) = 0.0
+    ALLOC_ (CS%KS(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%KS(:,:,:) = 0.0
+    ALLOC_ (CS%KT(SZI_(G), SZJ_(G), SZK_(G)+1)) ; CS%KT(:,:,:) = 0.0
+    ! To use KE conserving shear we store old u/v
+    ALLOC_ (CS%UO(SZIB_(G), SZJ_(G), SZK_(G))) ; CS%Uo(:,:,:) = 0.0
+    ALLOC_ (CS%VO(SZI_(G), SZJB_(G), SZK_(G))) ; CS%Vo(:,:,:) = 0.0
+    ! Fill the GOTM initial condition to all grid points
+    do j = G%jsc, G%jec
+      do i = G%isc, G%iec
+        do k=1,G%ke+1
+          kgotm=G%ke-k+1
+          CS%Kv(i,j,k)  = g_Kdm(kgotm)
+          CS%Kt(i,j,k)  = g_Kdt(kgotm)
+          CS%Ks(i,j,k)  = g_Kds(kgotm)
+          CS%TKE(i,j,k) = g_TKE(kgotm)
+          CS%EPS(i,j,k) = g_EPS(kgotm)
+          CS%L(i,j,k)   = g_l(kgotm)
+        enddo
+      enddo
+    enddo
+  endif
+
 
 !/ Prep GOTM related Diagnostics
   CS%diag => diag
@@ -193,11 +226,10 @@ subroutine GOTM_end(CS)
 end subroutine GOTM_end
 !\
 
-!/
 !> This subroutine performs the actual stepping of the GOTM turbulence scheme.
-!>  NOTE: With GOTM, many flavors of TKE-based vertical mixing parameterizations
-!>        can be chosen.  See the gotm documentation at gotm.net for a very
-!>        detailed description of the parameterizations.
+!!  NOTE: With GOTM, many flavors of TKE-based vertical mixing parameterizations
+!!        can be chosen.  See the gotm documentation at gotm.net for a very
+!!        detailed description of the parameterizations.
 subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
                           Kt, Ks, Kv)
 
@@ -312,7 +344,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
         ! 1. Compute N2
         DZ = 0.5*( h_1d(k) + h_1d(kp1) + GV%H_subroundoff*GV%H_to_m )
         g_N2(kgotm) = GoRho * (rho_1D(kk+2) - rho_1D(kk+1)) / dz
-        
+
         ! 2. Compute S2
 
         ! C-grid average to get Uk and Vk on T-points.
@@ -417,7 +449,7 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
    else
      CS%Kv(i,j,:) = CS%minK
      CS%Kt(i,j,:) = CS%minK
-     CS%Ks(i,j,:) = CS%minK         
+     CS%Ks(i,j,:) = CS%minK
      CS%N2(i,j,:) = 0.0
      CS%S2(i,j,:) = 0.0
    endif;enddo ! i
@@ -445,5 +477,322 @@ subroutine GOTM_calculate(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
 #endif
 
 end subroutine GOTM_calculate
+
+!> This subroutine performs the actual stepping of the GOTM turbulence scheme.
+!!  NOTE: With GOTM, many flavors of TKE-based vertical mixing parameterizations
+!!        can be chosen.  See the gotm documentation at gotm.net for a very
+!!        detailed description of the parameterizations.
+subroutine GOTM_calculate_vertex(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,&
+                          Kt, Ks, Kv_Bu)
+
+  ! Arguments
+  type(GOTM_CS),                           pointer          :: CS     !< Control structure
+  type(ocean_grid_type),                  intent(in)        :: G      !< Ocean grid
+  type(verticalGrid_type),                intent(in)        :: GV     !< Ocean vertical grid
+  real, intent(in)                                          :: Dt     !< Time step of MOM6 [s] for GOTM turbulence solver.
+                                                                      !<   We could subcycle this.
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(in)     :: h      !< Layer/level thicknesses [units of H]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(in)     :: Temp   !< potential/cons temp at h points [deg C]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(in)     :: Salt   !< Salinity (ppt) at h points
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(in)     :: u      !< U velocity at u points [m s-1]
+  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), intent(in)     :: v      !< V velocity at v points [m s-1]
+  type(EOS_type),                         pointer           :: EOS    !< Equation of state
+  real, dimension(SZI_(G),SZJ_(G)),         intent(in)      :: uStar  !< Surface friction velocity [m s-1]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)+1), intent(inout) :: Kt     !< (in)  Vertical diffusivity of heat w/o GOTM [m2 s-1]
+                                                                      !< (out) Vertical diffusivity including GOTM [m2 s-1]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)+1), intent(inout) :: Ks     !< (in)  Vertical diffusivity of salt w/o GOTM [m2 s-1]
+                                                                      !< (out) Vertical diffusivity including GOTM [m2 s-1]
+  real, dimension(SZIB_(G),SZJB_(G),SZK_(G)+1), intent(inout) :: Kv_Bu !< (in)  Vertical viscosity w/o GOTM [m2 s-1]
+                                                                      !< (out) Vertical viscosity including GOTM [m2 s-1]
+  real, dimension(SZIB_(G),SZK_(GV)) :: &
+    h_2d, &             ! A 2-D version of h, but converted to [Z ~> m].
+    u_2d, v_2d, &       ! 2-D versions of u_in and v_in, converted to [L T-1 ~> m s-1].
+    T_2d, S_2d          ! 2-D versions of T [degC], S [ppt], and rho [R ~> kg m-3].
+
+  ! Local variables
+  integer :: i, j, k, kp1, kgotm      ! Loop indices
+  real, dimension( G%ke )     :: H_1d ! 1-d level thickness in [m]
+  real, dimension( 0:G%ke )   :: g_h  ! 1-d level thickness in [m] for GOTM
+  real, dimension( 0:G%ke )   :: g_N2 ! Brunt-Vaisala frequency squared, at interfaces [s-2]
+  real, dimension( 0:G%ke )   :: g_S2 ! Shear frequency at interfaces [s-2]
+
+  ! for EOS calculation
+  !  *These profiles are size 2x the profile, specifically formulated for computing the N2 profile.
+  real, dimension( 2*G%ke )   :: rho_1D  ! Density [kg m-3]
+  real, dimension( 2*G%ke )   :: pres_1D ! Pressure [Pa]
+  real, dimension( 2*G%ke )   :: Temp_1D ! Temperature [deg C]
+  real, dimension( 2*G%ke )   :: Salt_1D ! Salinity [PPT]
+
+  real :: GoRho, pRef, Uabove,Ubelow,Vabove,Vbelow,Habove,Hbelow
+  real :: uoabove, uobelow,voabove,vobelow
+  real :: delH                 ! Thickness of a layer [h units]
+  real :: Dpt, DZ, DU, DV              ! In-situ depth and dz [h units]
+  integer :: kk, ksfc, ktmp
+
+  integer :: sCycle
+
+  real :: i_hwt
+  integer :: IsB, IeB, JsB, JeB, nz, nzc
+
+  isB = G%isc-1 ; ieB = G%iecB ; jsB = G%jsc-1 ; jeB = G%jecB ; nz = GV%ke
+
+#ifdef __DO_SAFETY_CHECKS__
+  if (CS%debug) then
+!    call hchksum(h*GV%H_to_m, "KPP in: h",G,haloshift=0)
+  endif
+#endif
+
+  ! Initializations:
+  g_h(:) = GV%H_subroundoff*GV%H_to_m
+  g_N2(:) = 0.0
+  g_S2(:) = 0.0
+
+  ! some constants
+  GoRho = GV%g_Earth / GV%Rho0
+
+  do J=JsB,JeB
+
+    ! Interpolate the various quantities to the corners, using masks.
+    do k=1,nz ; do I=IsB,IeB
+      u_2d(I,k) = (u(I,j,k)   * (G%mask2dCu(I,j)   * (h(i,j,k)   + h(i+1,j,k))) + &
+                   u(I,j+1,k) * (G%mask2dCu(I,j+1) * (h(i,j+1,k) + h(i+1,j+1,k))) ) / &
+                  ((G%mask2dCu(I,j)   * (h(i,j,k)   + h(i+1,j,k)) + &
+                    G%mask2dCu(I,j+1) * (h(i,j+1,k) + h(i+1,j+1,k))) + GV%H_subroundoff)
+      v_2d(I,k) = (v(i,J,k)   * (G%mask2dCv(i,J)   * (h(i,j,k)   + h(i,j+1,k))) + &
+                   v(i+1,J,k) * (G%mask2dCv(i+1,J) * (h(i+1,j,k) + h(i+1,j+1,k))) ) / &
+                  ((G%mask2dCv(i,J)   * (h(i,j,k)   + h(i,j+1,k)) + &
+                    G%mask2dCv(i+1,J) * (h(i+1,j,k) + h(i+1,j+1,k))) + GV%H_subroundoff)
+      I_hwt = 1.0 / (((G%mask2dT(i,j) * h(i,j,k) + G%mask2dT(i+1,j+1) * h(i+1,j+1,k)) + &
+                      (G%mask2dT(i+1,j) * h(i+1,j,k) + G%mask2dT(i,j+1) * h(i,j+1,k))) + &
+                     GV%H_subroundoff)
+      T_2d(I,k) = ( ((G%mask2dT(i,j) * h(i,j,k)) * Temp(i,j,k) + &
+                     (G%mask2dT(i+1,j+1) * h(i+1,j+1,k)) * Temp(i+1,j+1,k)) + &
+                    ((G%mask2dT(i+1,j) * h(i+1,j,k)) * Temp(i+1,j,k) + &
+                    (G%mask2dT(i,j+1) * h(i,j+1,k)) * Temp(i,j+1,k)) ) * I_hwt
+      S_2d(I,k) = ( ((G%mask2dT(i,j) * h(i,j,k)) * Salt(i,j,k) + &
+                     (G%mask2dT(i+1,j+1) * h(i+1,j+1,k)) * Salt(i+1,j+1,k)) + &
+                    ((G%mask2dT(i+1,j) * h(i+1,j,k)) * Salt(i+1,j,k) + &
+                     (G%mask2dT(i,j+1) * h(i,j+1,k)) * Salt(i,j+1,k)) ) * I_hwt
+      h_2d(I,k) = GV%H_to_Z * ((G%mask2dT(i,j) * h(i,j,k) + G%mask2dT(i+1,j+1) * h(i+1,j+1,k)) + &
+                               (G%mask2dT(i+1,j) * h(i+1,j,k) + G%mask2dT(i,j+1) * h(i,j+1,k)) ) / &
+                              ((G%mask2dT(i,j) + G%mask2dT(i+1,j+1)) + &
+                               (G%mask2dT(i+1,j) + G%mask2dT(i,j+1)) + 1.0e-36 )
+    enddo ; enddo
+    !---------------------------------------
+    ! Work on each column.
+    !---------------------------------------
+    do I=IsB,IeB ; if ((G%mask2dCu(I,j) + G%mask2dCu(I,j+1)) + &
+                       (G%mask2dCv(i,J) + G%mask2dCv(i+1,J)) > 0.0) then
+      pRef = 0.0 ; Dpt = 0.0
+      !compute NN and SS on the GOTM vertical grid
+      do k=1,G%ke
+        ! Set vertical indices
+        kp1 = min(k+1,g%ke)
+        kgotm = G%ke-k+1 !When k=1, kgotm=G%ke (faces)
+        !
+        H_1d(k) = h_2d(I,k)*GV%H_to_m
+        ! pRef is pressure at interface between k and kp1.
+        pRef = pRef + GV%H_to_Pa * H_1d(k)
+        Dpt = Dpt + h_2d(I,k)*GV%H_to_m
+        ! pressure, temp, and saln for EOS
+        ! kk+1 = k fields
+        ! kk+2 = kop1 fields
+        kk   = 2*(k-1)
+        pres_1D(kk+1) = pRef
+        pres_1D(kk+2) = pRef
+        Temp_1D(kk+1) = T_2d(I,k)
+        Temp_1D(kk+2) = T_2d(I,kp1)
+        Salt_1D(kk+1) = S_2d(I,k)
+        Salt_1D(kk+2) = S_2d(I,kp1)
+      enddo
+
+      ! compute in-situ density
+      call calculate_density(Temp_1D, Salt_1D, pres_1D, rho_1D, 1, 2*G%ke, EOS)
+
+      g_N2(:) = 0.0
+      g_S2(:) = 0.0
+      do k = 1, G%ke-1 !k=1
+        kp1 = k+1
+        kk = 2*(k-1)
+        kgotm = G%ke-k !k=1, kgotm=nk-1 (interfaces)
+
+        ! 1. Compute N2
+        DZ = 0.5*( h_1d(k) + h_1d(kp1) + GV%H_subroundoff*GV%H_to_m )
+        g_N2(kgotm) = GoRho * (rho_1D(kk+2) - rho_1D(kk+1)) / dz
+
+        ! 2. Compute S2
+
+        ! C-grid average to get Uk and Vk on T-points.
+        ! k is above, k+1 is below (relative to interface k)
+        Uabove  = u_2d(I,k)
+        Ubelow  = u_2d(I,kp1)
+        Vabove  = v_2d(I,k)
+        Vbelow  = v_2d(I,kp1)
+        ! Needs rewritten for vertex points.  Not presently used.
+        !UOabove = 0.5*(CS%uo(i,j,k)+CS%uo(i-1,j,k))
+        !UObelow = 0.5*(CS%uo(i,j,kp1)+CS%uo(i-1,j,kp1))
+        !VOabove = 0.5*(CS%vo(i,j,k)+CS%vo(i,j-1,k))
+        !VObelow = 0.5*(CS%vo(i,j,kp1)+CS%vo(i,j-1,kp1))
+        Habove  = h_1d(k)
+        Hbelow  = h_1d(kp1)
+
+        ! This code is for KE conserving shear following Burchard et al. (2002)
+        ! -> need to check that old/present values are correctly identified.
+        ! Not obvious that this gives positive-definite shear?
+        !DU = 0.5 * ( (Uabove-Ubelow)*(Uabove-UObelow) /&
+        !             (0.5*(Habove+Hbelow)*Hbelow)&
+        !            +(Uabove-Ubelow)*(UOabove-Ubelow) /&
+        !             (0.5*(Habove+Hbelow)*Habove))
+        !DV = 0.5 * ( (Vabove-Vbelow)*(Vabove-VObelow) /&
+        !             (0.5*(Habove+Hbelow)*Hbelow)&
+        !            +(Vabove-Vbelow)*(VOabove-Vbelow) /&
+        !             (0.5*(Habove+Hbelow)*Habove))
+        ! This code computes shear from U/V at present time-step
+        DU = (Uabove-Ubelow)*(Uabove-Ubelow) /&
+             (0.5*(Habove+Hbelow))**2
+        DV = (Vabove-Vbelow)*(Vabove-Vbelow) /&
+             (0.5*(Habove+Hbelow))**2
+        g_S2(kgotm) = DU + DV
+      enddo
+
+      ! The next few lines of code should only effect output (boundary
+      !  conditions are otherwise set).
+      g_S2(0) = g_S2(1)
+      g_S2(G%ke) = g_S2(G%ke-1)
+      g_N2(0) = g_N2(1)
+      g_N2(G%ke) = g_N2(G%ke-1)
+
+      !   GOTM do_turbulence format:
+      ! nlev - number of levels
+      ! dt   - time step [s]
+      ! depth - distance between surface and bottom [m]
+      ! u_taus - surface friction velocity [m/s]
+      ! u_taub - bottom friction velocity [m/s]
+      ! z0s - surface roughness [m]
+      ! z0b - bottom roughness [m]
+      ! h - surface thickness array [m]
+      ! NN - buoyancy frequency array [1/s2]
+      ! SS - shear freuqnecy array [1/s2]
+      ! xP - TKE production due to [perhaps] seagrass [m2/s3]
+      !   subroutine do_turbulence(nlev,dt,depth,u_taus,u_taub,z0s,z0b,h,      &
+      !                            NN,SS,xP)
+      !N2_1d=0.0;S2_1d=0.0;
+      do k=1,G%ke+1
+        kgotm=G%ke-k+1
+        !Fill GOTM arrays for time stepping
+        g_Kdm(kgotm) = CS%Kv(i,j,k)
+        g_Kdt(kgotm) = CS%Kt(i,j,k)
+        g_Kds(kgotm) = CS%Ks(i,j,k)
+        g_TKE(kgotm) = CS%TKE(i,j,k)
+        g_EPS(kgotm) = CS%EPS(i,j,k)
+        g_l(kgotm)   = CS%L(i,j,k)
+      enddo
+      do k=1,G%ke
+        kgotm=G%ke-k+1
+        g_h(kgotm) = H_1d(k)
+      enddo
+      do sCycle=1,CS%NSubCycle
+        call do_turbulence(G%ke,&! Number of levels
+                          dt/real(CS%NSubCycle),&! time step
+                          dpt,&! depth
+                          ustar(i,j),&! ustar surface
+                          0.,&! ustar bottom
+                          0.02,&! Z0 surface ! This could be made to compute from Charnock, or run-time
+                          0.02,&! Z0 bottom  ! ditto
+                          g_h,&! Thickness (e.g., see calculation above)
+                          g_N2,&! Buoyancy Frequency
+                          g_S2 &! Shear squared
+                          ) ! An additional TKE production source is optional input, neglected here
+      enddo
+
+      do k=1,G%ke+1
+        kgotm=G%ke-k+1
+        !Fill MOM arrays from GOTM
+        CS%Kv(I,J,k) = g_Kdm(kgotm)
+        CS%Kt(I,J,k) = g_Kdt(kgotm)
+        CS%Ks(I,J,k) = g_Kds(kgotm)
+        Kv_Bu(I,J,k) = g_Kdm(kgotm)
+        CS%TKE(I,J,k) = g_TKE(kgotm)
+        CS%EPS(I,J,k) = g_EPS(kgotm)
+        CS%L(I,J,k) = g_l(kgotm)
+        ! Writing for Output the shear/buoyancy frequencies
+        if (CS%id_GOTM_S2.gt.0) then
+          CS%S2(i,j,k) = g_S2(kgotm)
+        endif
+        if (CS%id_GOTM_N2.gt.0) then
+          CS%N2(i,j,k) = g_N2(kgotm)
+        endif
+      enddo
+    else
+     CS%Kv(i,j,:) = CS%minK
+     CS%Kt(i,j,:) = CS%minK
+     CS%Ks(i,j,:) = CS%minK
+     CS%N2(i,j,:) = 0.0
+     CS%S2(i,j,:) = 0.0
+   endif;enddo ! i
+  enddo ! j
+
+  ! Interpolate Kt/Ks from Q to H
+  do j=G%jsc,G%jec
+    do i=G%isc,G%iec
+      do k=2,G%ke
+        ! Right now it overwrites any previously stored values?
+        Kt(i,j,K) = (CS%Kt(I,J,K)*G%mask2dBu(I,J) + &
+                     CS%Kt(I-1,J,K)*G%mask2dBu(I-1,J) + &
+                     CS%Kt(I,J-1,K)*G%mask2dBu(I,J-1) + &
+                     CS%Kt(I-1,J-1,K)*G%mask2dBu(I-1,J-1)) / &
+                    (G%mask2dBu(I,J) + G%mask2dBu(I-1,J) + &
+                     G%mask2dBu(I,J-1) + G%mask2dBu(I-1,J-1))
+        Ks(i,j,K) = (CS%Ks(I,J,K)*G%mask2dBu(I,J) + &
+                     CS%Ks(I-1,J,K)*G%mask2dBu(I-1,J) + &
+                     CS%Ks(I,J-1,K)*G%mask2dBu(I,J-1) + &
+                     CS%Ks(I-1,J-1,K)*G%mask2dBu(I-1,J-1)) / &
+                    (G%mask2dBu(I,J) + G%mask2dBu(I-1,J) + &
+                     G%mask2dBu(I,J-1) + G%mask2dBu(I-1,J-1))
+      enddo
+    enddo
+  enddo
+  ! Set old values (needed for KE conserving S2 calculation)
+  CS%UO(:,:,:) = U(:,:,:)
+  CS%VO(:,:,:) = V(:,:,:)
+
+!/ Diagnostics
+  if (CS%id_TKE.gt.0)         call post_data(CS%id_TKE        , CS%TKE, CS%diag)
+  if (CS%id_Dissipation.gt.0) call post_data(CS%id_Dissipation, CS%EPS, CS%diag)
+  if (CS%id_LengthScale.gt.0) call post_data(CS%id_LengthScale, CS%L  , CS%diag)
+  if (CS%id_GOTM_KM.gt.0)     call post_data(CS%id_GOTM_KM    , CS%Kv , CS%diag)
+  if (CS%id_GOTM_KH.gt.0)     call post_data(CS%id_GOTM_KH    , CS%Kt , CS%diag)
+  if (CS%id_GOTM_KS.gt.0)     call post_data(CS%id_GOTM_KS    , CS%Ks , CS%diag)
+  if (CS%id_GOTM_N2.gt.0)     call post_data(CS%id_GOTM_N2    , CS%N2 , CS%diag)
+  if (CS%id_GOTM_S2.gt.0)     call post_data(CS%id_GOTM_S2    , CS%S2 , CS%diag)
+!\
+
+#ifdef __DO_SAFETY_CHECKS__
+  if (CS%debug) then
+!    call hchksum(Ks, "KPP out: Ks",G,haloshift=0)
+  endif
+#endif
+
+end subroutine GOTM_calculate_vertex
+
+logical function GOTM_at_vertex(param_file)
+  type(param_file_type), intent(in) :: param_file !< A structure to parse for run-time parameters
+
+  ! Local variables
+  character(len=40)  :: mdl = "MOM_GOTM"  ! This module's name.
+  logical :: do_GOTM
+  ! This function returns true only if the parameters "USE_JACKSON_PARAM" and "VERTEX_SHEAR" are both true.
+
+  GOTM_at_vertex = .false.
+
+  call get_param(param_file, mdl, "USE_GOTM", do_GOTM, &
+                 default=.false., do_not_log=.true.)
+  if (do_GOTM) &
+    call get_param(param_file, mdl, "VERTEX_SHEAR", GOTM_at_vertex, &
+                 "If true, do the calculations of the shear-driven mixing "//&
+                 "at the cell vertices (i.e., the vorticity points).", &
+                 default=.false., do_not_log=.true.)
+
+end function GOTM_at_vertex
 
 end module MOM_GOTM
