@@ -33,6 +33,7 @@ integer, private, parameter :: TESTPROF = 0
 integer, private, parameter :: SURFBANDS = 1
 integer, private, parameter :: DHH85 = 2
 integer, private, parameter :: LF17 = 3
+integer, private, parameter :: WIND = 4
 integer, private, parameter :: DATAOVR = 1
 integer, private, parameter :: COUPLER = 2
 integer, private, parameter :: INPUT = 3
@@ -127,8 +128,9 @@ type, public :: wave_parameters_CS ; private
                           !!   1 - Surface Stokes Drift Bands
                           !!   2 - DHH85
                           !!   3 - LF17
+                          !!   4 - WIND
                           !! -99 - No waves computed, but empirical Langmuir number used.
-  
+
   ! Options For Test Prof
   Real    :: TP_STKX0, &! X-direction surface Stokes drift in test profile
              TP_STKY0, &! Y-direction surface Stokes drift in test profile
@@ -171,7 +173,7 @@ type, public :: wave_parameters_CS ; private
 
 
 
-  
+
 end type wave_parameters_CS
 
 ! Options not needed outside of this module
@@ -248,7 +250,8 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
        " TEST_PROFILE  - Prescribed from surface Stokes drift and a decay wavelength.\n"//&
        " SURFACE_BANDS - Computed from surface values and decay wavelengths.\n"//&
        " DHH85         - Uses Donelan et al. 1985 empirical wave spectrum. \n"//  &
-       " LF17          - Infers Stokes drift profile from wind speed following Li and Fox-Kemper 2017.\n",  &
+       " LF17          - Infers Stokes drift profile from wind speed following Li and Fox-Kemper 2017.\n"//&
+       " WIND          - A Simple relationship from the wind vector for testing.",&
        units='', default="EMPTY")
   select case (TRIM(TMPSTRING1))
   case ("EMPTY")! No Waves
@@ -338,7 +341,9 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
           default=.false.)
   case ("LF17")!Li and Fox-Kemper 17 wind-sea Langmuir number
     CS%WaveMethod = LF17
-    case default
+  case ("WIND")!Wind speed based
+    CS%WaveMethod = WIND
+  case default
       call MOM_error(FATAL,'Check WAVE_METHOD.')
   end select
 
@@ -379,14 +384,14 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
   endif
 
   ! Initialize Wave related outputs
-  CS%id_surfacestokes_y = register_diag_field('ocean_model','surface_stokes_y', &
-       CS%diag%axesCu1,Time,'Surface Stokes drift (y)','m s-1')
-  CS%id_surfacestokes_x = register_diag_field('ocean_model','surface_stokes_x', &
-       CS%diag%axesCv1,Time,'Surface Stokes drift (x)','m s-1')
-  CS%id_3dstokes_y = register_diag_field('ocean_model','3d_stokes_y', &
-       CS%diag%axesCvL,Time,'3d Stokes drift (y)','m s-1')
-  CS%id_3dstokes_x = register_diag_field('ocean_model','3d_stokes_x', &
-       CS%diag%axesCuL,Time,'3d Stokes drift (y)','m s-1')
+  CS%id_surfacestokes_y = register_diag_field('ocean_model','uos_Stokes', &
+       CS%diag%axesCu1,Time,'Surface Stokes drift (meridional)','m s-1')
+  CS%id_surfacestokes_x = register_diag_field('ocean_model','vos_Stokes', &
+       CS%diag%axesCv1,Time,'Surface Stokes drift (zonal)','m s-1')
+  CS%id_3dstokes_y = register_diag_field('ocean_model','v_Stokes', &
+       CS%diag%axesCvL,Time,'Stokes drift (meridional)','m s-1')
+  CS%id_3dstokes_x = register_diag_field('ocean_model','u_Stokes', &
+       CS%diag%axesCuL,Time,'Stokes drift (zonal)','m s-1')
   CS%id_La_turb = register_diag_field('ocean_model','La_turbulent',&
        CS%diag%axesT1,Time,'Surface (turbulent) Langmuir number','nondim')
 
@@ -421,7 +426,7 @@ subroutine MOM_wave_interface_init_lite(CS, diag, param_file)
 
   ! Add any initializations needed here
   CS%UseWaves = .false.
-  
+
   ! Langmuir number Options
   call get_param(param_file, mdl, "LA_DEPTH_RATIO", CS%LA_FracHBL,&
        "The depth (normalized by BLD) to average Stokes drift over in "//&
@@ -493,7 +498,7 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
   real    :: CMN_FAC, WN, UStokes
   real    :: La
   integer :: ii, jj, kk, b, iim1, jjm1
-  real :: ustary, ustarx, tauy, taux, u10
+  real :: ustary, ustarx, tauy, taux, u10, ustar
 
   one_cm = 0.01*US%m_to_Z
 
@@ -544,7 +549,7 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
         CS%US0_y(ii,JJ) = CS%US0_y(ii,JJ) + CS%STKy0(ii,JJ,b)*CMN_FAC
       enddo ; enddo
     enddo
-   
+
     ! 2. Second compute the level averaged Stokes drift
     !
     ! X-direction
@@ -618,7 +623,8 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
                  G%mask2dCv(II,jj-1)*forces%tauy(II,jj-1)) /&
                  (G%mask2dCv(II+1,jj)+G%mask2dCv(II+1,jj-1)+&
                  G%mask2dCv(II,jj)+G%mask2dCv(II,jj-1))
-          ustarX = forces%taux(II,jj)/sqrt(forces%taux(II,jj)**2+tauy**2)
+          ustar = sqrt(sqrt(forces%taux(II,jj)**2+tauy**2)/GV%rho0)
+          ustarX = ustar*forces%taux(II,jj)/sqrt(forces%taux(II,jj)**2+tauy**2)
           call ust_2_u10_coare3p5(US%Z_to_m*US%s_to_T*ustarX*sqrt(US%R_to_kg_m3*GV%Rho0/1.225),&
                                   u10, GV, US)
           !u10 = CS%WaveWind -> Now computed from stress
@@ -639,16 +645,65 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
                  G%mask2dCu(ii-1,JJ)*forces%taux(ii-1,JJ)) /&
                  (G%mask2dCu(ii,JJ+1)+G%mask2dCu(ii-1,JJ+1)+&
                  G%mask2dCu(ii,JJ)+G%mask2dCu(ii-1,JJ))
-          ustarY = forces%tauy(ii,JJ)/sqrt(forces%tauy(ii,JJ)**2+taux**2)
+          ustar = sqrt(sqrt(forces%tauy(ii,JJ)**2*G%mask2dCv(ii,JJ)+taux**2)/GV%rho0)
+          ustarY = ustar*forces%tauy(ii,JJ)/sqrt(forces%tauy(ii,JJ)**2+taux**2)
           call ust_2_u10_coare3p5(US%Z_to_m*US%s_to_T*ustarY*sqrt(US%R_to_kg_m3*GV%Rho0/1.225),&
                                   u10, GV, US)
           !u10 = CS%WaveWind -> Now computed from stress
           call DHH85_mid(CS, GV, US, u10, CS%WaveAge, MidPoint, UStokes)
           CS%US_y(ii,JJ,kk) = UStokes
         enddo
-      enddo ; enddo
+      enddo; enddo
+      CS%us0_y(:,:) = CS%us_y(:,:,1)
+      CS%us0_x(:,:) = CS%us_x(:,:,1)
       CS%DHH85_is_set = .true.
     endif
+  elseif (CS%WaveMethod==WIND) then
+    do II = G%iscB,G%iecB ; do jj = G%jsc,G%jec
+      ! 4-point avg from V to U points
+      tauy = (G%mask2dCv(II+1,jj)*forces%tauy(II+1,jj) +&
+             G%mask2dCv(II+1,jj-1)*forces%tauy(II+1,jj-1) +&
+             G%mask2dCv(II,jj)*forces%tauy(II,jj) +&
+             G%mask2dCv(II,jj-1)*forces%tauy(II,jj-1)) /&
+             (G%mask2dCv(II+1,jj)+G%mask2dCv(II+1,jj-1)+&
+             G%mask2dCv(II,jj)+G%mask2dCv(II,jj-1))
+      ustar = sqrt(sqrt(forces%taux(II,jj)**2+tauy**2)/GV%rho0)
+      ustarX = ustar*forces%taux(II,jj)/sqrt(forces%taux(II,jj)**2+tauy**2)
+      call ust_2_u10_coare3p5(US%Z_to_m*US%s_to_T*abs(ustarX)*sqrt(US%R_to_kg_m3*GV%Rho0/1.225),&
+           u10, GV, US)
+      u10 = sign(u10,ustarX)
+      bottom = 0.0
+      do kk = 1,G%ke
+        Top = Bottom
+        MidPoint = Bottom - GV%H_to_Z*0.25*(h(II,jj,kk)+h(II-1,jj,kk))
+        Bottom = Bottom - GV%H_to_Z*0.5*(h(II,jj,kk)+h(II-1,jj,kk))
+        CS%US_x(II,jj,kk) = u10*0.03*exp(MidPoint*2.*3.14/50.)
+      enddo
+    enddo; enddo
+    do ii = G%isc,G%iec ; do JJ = G%jscB,G%jecB
+      ! 4-point avg from U to V points
+      taux = (G%mask2dCu(ii,JJ+1)*forces%taux(ii,JJ+1) +&
+              G%mask2dCu(ii-1,JJ+1)*forces%taux(ii-1,JJ+1) +&
+              G%mask2dCu(ii,JJ)*forces%taux(ii,JJ) +&
+              G%mask2dCu(ii-1,JJ)*forces%taux(ii-1,JJ)) /&
+              (G%mask2dCu(ii,JJ+1)+G%mask2dCu(ii-1,JJ+1)+&
+              G%mask2dCu(ii,JJ)+G%mask2dCu(ii-1,JJ))
+      ustar = sqrt(sqrt(forces%tauy(ii,JJ)**2*G%mask2dCv(ii,JJ)+taux**2)/GV%rho0)
+      ustarY = ustar*forces%tauy(ii,JJ)/sqrt(forces%tauy(ii,JJ)**2+taux**2)
+      call ust_2_u10_coare3p5(US%Z_to_m*US%s_to_T*abs(ustarY)*sqrt(US%R_to_kg_m3*GV%Rho0/1.225),&
+           u10, GV, US)
+      u10 = sign(u10,ustarY)
+      !u10 = CS%WaveWind -> Now computed from stress
+      bottom = 0.0
+      do kk = 1,G%ke
+        Top = Bottom
+        MidPoint = Bottom - GV%H_to_Z*0.25*(h(II,jj,kk)+h(II-1,jj,kk))
+        Bottom = Bottom - GV%H_to_Z*0.5*(h(II,jj,kk)+h(II-1,jj,kk))
+        CS%US_y(ii,JJ,kk) = u10*0.03*exp(MidPoint*2.*3.14/50.)
+      enddo
+    enddo; enddo
+    CS%us0_y(:,:) = CS%us_y(:,:,1)
+    CS%us0_x(:,:) = CS%us_x(:,:,1)
   else! Keep this else, fallback to 0 Stokes drift
     do kk= 1,G%ke
       do II = G%iscB,G%iecB ; do jj = G%jsc,G%jec
@@ -661,7 +716,7 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
   endif
 
   call pass_vector(CS%US_x,CS%Us_y, G%Domain, To_ALL)
-  
+
   ! Turbulent Langmuir number is computed here and available to use anywhere.
   ! SL Langmuir number requires mixing layer depth, and therefore is computed
   ! in the routine it is needed by (e.g. KPP or ePBL).
@@ -1319,7 +1374,7 @@ subroutine ust_2_u10_coare3p5(USTair, U10, GV, US)
   real, parameter :: nu=1e-6 ! Should access a get_param air-viscosity
   real, parameter :: z0sm_coef=0.11
   real :: z0sm, z0, z0rough, u10a, alpha, CD
-  
+
   integer :: CT
 
   ! Uses empirical formula for z0 to convert ustar_air to u10 based on the
