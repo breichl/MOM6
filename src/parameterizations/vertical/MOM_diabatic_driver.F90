@@ -3320,6 +3320,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
   character(len=40)  :: var_name
   character(len=160) :: var_descript
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB, nz, nbands, m
+  logical :: ignore_gotm
   isd  = G%isd  ; ied  = G%ied  ; jsd  = G%jsd  ; jed  = G%jed ; nz = G%ke
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
 
@@ -3614,7 +3615,11 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
        cmor_long_name='Ocean vertical salt diffusivity')
 
   ! CS%useGOTM is set to True if GOTM is to be used, False otherwise.
-  CS%useGOTM = GOTM_init(param_file, G, diag, Time, CS%GOTM_CSp, passive=CS%GOTMisPassive)
+  call get_param(param_file, mdl, "USE_GOTM_SD", Ignore_GOTM, &
+       "Use GOTM from set_diffusivity",default=.false.,do_not_log=.false.)
+  if (.not.Ignore_GOTM) then
+     CS%useGOTM = GOTM_init(param_file, G, diag, Time, CS%GOTM_CSp, passive=CS%GOTMisPassive)
+  endif
   ! CS%useKPP is set to True if KPP-scheme is to be used, False otherwise.
   ! KPP_init() allocated CS%KPP_Csp and also sets CS%KPPisPassive
   CS%useKPP = KPP_init(param_file, G, GV, US, diag, Time, CS%KPP_CSp, passive=CS%KPPisPassive)
