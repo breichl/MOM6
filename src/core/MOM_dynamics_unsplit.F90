@@ -350,12 +350,14 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, forces, &
   dt_visc = 0.5*dt ; if (CS%use_correct_dt_visc) dt_visc = dt_pred
   call vertvisc_coef(up, vp, h_av, forces, visc, dt_visc, G, GV, US, CS%vertvisc_CSp, CS%OBC)
   call vertvisc(up, vp, h_av, forces, visc, dt_visc, CS%OBC, CS%ADp, CS%CDp, &
-                G, GV, US, CS%vertvisc_CSp, Waves=Waves)
-  if (associated(Waves)) then
-    if (Waves%CoriolisStokes) then
-      call CoriolisStokes(G, GV, dt*0.5, h_av, up, vp, WAVES, US)
-    endif
-  endif
+         G, GV, US, CS%vertvisc_CSp, Waves=Waves)
+  !BGR -> to delete
+  !if (associated(Waves)) then
+  !  if (Waves%CoriolisStokes) then
+  !    call CoriolisStokes(G, GV, dt*0.5, h_av, up, vp, WAVES, US)
+  !  endif
+  !endif
+  !BGR < end to delete
   call cpu_clock_end(id_clock_vertvisc)
   call pass_vector(up, vp, G%Domain, clock=id_clock_pass)
 
@@ -415,12 +417,14 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, forces, &
   call cpu_clock_begin(id_clock_vertvisc)
   call vertvisc_coef(upp, vpp, hp, forces, visc, dt*0.5, G, GV, US, CS%vertvisc_CSp, CS%OBC)
   call vertvisc(upp, vpp, hp, forces, visc, dt*0.5, CS%OBC, CS%ADp, CS%CDp, &
-                G, GV, US, CS%vertvisc_CSp, Waves=Waves)
-  if (associated(Waves)) then
-    if (Waves%CoriolisStokes) then
-      call CoriolisStokes(G, GV, dt*0.5, h_av, upp, vpp, WAVES, US)
-    endif
-  endif
+         G, GV, US, CS%vertvisc_CSp, Waves=Waves)
+  !BGR To Delete->
+  !if (associated(Waves)) then
+  !  if (Waves%CoriolisStokes) then
+  !    call CoriolisStokes(G, GV, dt*0.5, h_av, upp, vpp, WAVES, US)
+  !  endif
+  !endif
+  !BGR end to delete
   call cpu_clock_end(id_clock_vertvisc)
   call pass_vector(upp, vpp, G%Domain, clock=id_clock_pass)
 
@@ -487,12 +491,14 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, forces, &
   call cpu_clock_begin(id_clock_vertvisc)
   call vertvisc_coef(u, v, h_av, forces, visc, dt, G, GV, US, CS%vertvisc_CSp, CS%OBC)
   call vertvisc(u, v, h_av, forces, visc, dt, CS%OBC, CS%ADp, CS%CDp, &
-                G, GV, US, CS%vertvisc_CSp, CS%taux_bot, CS%tauy_bot, Waves=Waves)
-  if (associated(Waves)) then
-    if (Waves%CoriolisStokes) then
-      call CoriolisStokes(G, GV, dt, h_av, u, v, WAVES, US)
-    endif
-  endif
+         G, GV, US, CS%vertvisc_CSp, CS%taux_bot, CS%tauy_bot, Waves=Waves)
+  !BGR to delete ->
+  !if (associated(Waves)) then
+  !  if (Waves%CoriolisStokes) then
+  !    call CoriolisStokes(G, GV, dt, h_av, u, v, WAVES, US)
+  !  endif
+  !endif
+  !end BGR to delete
   call cpu_clock_end(id_clock_vertvisc)
   call pass_vector(u, v, G%Domain, clock=id_clock_pass)
 

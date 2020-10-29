@@ -16,6 +16,7 @@ use MOM_string_functions, only : uppercase
 use MOM_unit_scaling,  only : unit_scale_type
 use MOM_variables,     only : accel_diag_ptrs
 use MOM_verticalGrid,  only : verticalGrid_type
+use MOM_wave_interface, only : wave_parameters_CS
 
 implicit none ; private
 
@@ -113,7 +114,7 @@ character*(20), parameter :: PV_ADV_UPWIND1_STRING = "PV_ADV_UPWIND1"
 contains
 
 !> Calculates the Coriolis and momentum advection contributions to the acceleration.
-subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS)
+subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
   type(ocean_grid_type),                     intent(in)    :: G  !< Ocen grid structure
   type(verticalGrid_type),                   intent(in)    :: GV !< Vertical grid structure
   real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(in)    :: u  !< Zonal velocity [L T-1 ~> m s-1]
@@ -131,6 +132,7 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS)
   type(accel_diag_ptrs),                     intent(inout) :: AD  !< Storage for acceleration diagnostics
   type(unit_scale_type),                     intent(in)    :: US  !< A dimensional unit scaling type
   type(CoriolisAdv_CS),                      pointer       :: CS  !< Control structure for MOM_CoriolisAdv
+  type(Wave_parameters_CS),        optional, pointer       :: Waves !< An optional pointer to Stokes drift CS
 
   ! Local variables
   real, dimension(SZIB_(G),SZJB_(G)) :: &
@@ -214,6 +216,7 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS)
   real :: UHeff, VHeff  ! More temporary variables [H L2 T-1 ~> m3 s-1 or kg s-1].
   real :: QUHeff,QVHeff ! More temporary variables [H L2 T-1 s-1 ~> m3 s-2 or kg s-2].
   integer :: i, j, k, n, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
+  logical :: Stokes_VF
 
 ! Diagnostics for fractional thickness-weighted terms
   real, allocatable, dimension(:,:) :: &
@@ -278,10 +281,23 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS)
     ! vorticity is second order accurate everywhere with free slip b.c.s,
     ! but only first order accurate at boundaries with no slip b.c.s.
     ! First calculate the contributions to the circulation around the q-point.
-    do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
-      dvdx(I,J) = (v(i+1,J,k)*G%dyCv(i+1,J) - v(i,J,k)*G%dyCv(i,J))
-      dudy(I,J) = (u(I,j+1,k)*G%dxCu(I,j+1) - u(I,j,k)*G%dxCu(I,j))
-    enddo ; enddo
+    Stokes_VF = present(Waves)
+    if (Stokes_VF) Stokes_VF = associated(Waves)
+    if (Stokes_VF) Stokes_VF = Waves%Stokes_VF
+    if (Stokes_VF) then
+      do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
+        dvdx(I,J) = ((v(i+1,J,k)-Waves%us_y(i+1,J,k))*G%dyCv(i+1,J) - &
+                     (v(i,J,k)-Waves%us_y(i,J,k))*G%dyCv(i,J))
+        dudy(I,J) = ((u(I,j+1,k)-Waves%us_x(I,j+1,k))*G%dxCu(I,j+1) - &
+                     (u(I,j,k)-Waves%us_x(I,j,k))*G%dxCu(I,j))
+      enddo; enddo
+    else
+      do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
+        dvdx(I,J) = (v(i+1,J,k)*G%dyCv(i+1,J) - v(i,J,k)*G%dyCv(i,J))
+        dudy(I,J) = (u(I,j+1,k)*G%dxCu(I,j+1) - u(I,j,k)*G%dxCu(I,j))
+      enddo; enddo
+    endif
+
     do J=Jsq-1,Jeq+1 ; do i=Isq-1,Ieq+2
       hArea_v(i,J) = 0.5*(Area_h(i,j) * h(i,j,k) + Area_h(i,j+1) * h(i,j+1,k))
     enddo ; enddo
