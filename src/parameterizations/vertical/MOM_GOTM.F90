@@ -711,7 +711,7 @@ subroutine GOTM_calculate_vertex(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,
         CS%Kv(I,J,k) = g_Kdm(kgotm)
         CS%Kt(I,J,k) = g_Kdt(kgotm)
         CS%Ks(I,J,k) = g_Kds(kgotm)
-        Kv_Bu(I,J,k) = g_Kdm(kgotm)
+        Kv_Bu(I,J,k) = g_Kdm(kgotm)!+Kv_Bu(I,J,k)
         CS%TKE(I,J,k) = g_TKE(kgotm)
         CS%EPS(I,J,k) = g_EPS(kgotm)
         CS%L(I,J,k) = g_l(kgotm)
@@ -736,7 +736,6 @@ subroutine GOTM_calculate_vertex(CS, G, GV, DT, h, Temp, Salt, u, v, EOS, uStar,
   do j=G%jsc,G%jec
     do i=G%isc,G%iec
       do k=2,G%ke
-        ! Right now it overwrites any previously stored values?
         Kt(i,j,K) = (CS%Kt(I,J,K)*G%mask2dBu(I,J) + &
                      CS%Kt(I-1,J,K)*G%mask2dBu(I-1,J) + &
                      CS%Kt(I,J-1,K)*G%mask2dBu(I,J-1) + &
