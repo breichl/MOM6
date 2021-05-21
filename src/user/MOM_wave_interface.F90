@@ -64,6 +64,9 @@ type, public :: wave_parameters_CS ; private
   logical, public :: Stokes_PGF    !< Developmental:
                                    !! True if Stokes shear pressure Gradient force is used
   logical, public :: Passive_Stokes_PGF !< Keeps Stokes_PGF on, but doesn't affect dynamics
+  logical, public :: Stokes_DDT    !< Developmental:
+                                   !! True if Stokes d/dt is used
+
   
   ! Primary source flags
   integer :: DataSource !< Integer that specifies where the Model Looks for Data
@@ -93,6 +96,14 @@ type, public :: wave_parameters_CS ; private
                           !! Vertical -> Mid-points
   real, allocatable, dimension(:,:,:), public :: &
        Us_y               !< 3d meridional Stokes drift profile [m s-1]
+                          !! Horizontal -> V points
+                          !! Vertical -> Mid-points
+    real, allocatable, dimension(:,:,:), public :: &
+       ddt_Us_x           !< 3d zonal Stokes drift profile [m s-1]
+                          !! Horizontal -> U points
+                          !! Vertical -> Mid-points
+  real, allocatable, dimension(:,:,:), public :: &
+       ddt_Us_y           !< 3d meridional Stokes drift profile [m s-1]
                           !! Horizontal -> V points
                           !! Vertical -> Mid-points
   real, allocatable, dimension(:,:), public :: &
@@ -173,6 +184,7 @@ type, public :: wave_parameters_CS ; private
   ! Diagnostic handles
   integer, public :: id_surfacestokes_x = -1 , id_surfacestokes_y = -1
   integer, public :: id_3dstokes_x = -1 , id_3dstokes_y = -1
+  integer, public :: id_ddt_3dstokes_x = -1 , id_ddt_3dstokes_y = -1
   integer, public :: id_La_turb = -1
   integer, public :: id_PFu_Stokes = -1 , id_PFv_Stokes = -1
 
@@ -248,6 +260,9 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
        Default=.false.)
   call get_param(param_file, mdl, "PASSIVE_STOKES_PGF", CS%Passive_Stokes_PGF, &
        "Flag to make Stokes pressure gradient force diagnostic only.", units="", &
+       Default=.false.)
+  call get_param(param_file, mdl, "STOKES_DDT", CS%Stokes_DDT, &
+       "Flag to use Stokes d/dt", units="", &
        Default=.false.)
 
   ! Get Wave Method and write to integer WaveMethod
@@ -373,6 +388,10 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
   CS%Us_x(:,:,:) = 0.0
   allocate(CS%Us_y(G%isd:G%Ied,G%jsdB:G%jedB,G%ke))
   CS%Us_y(:,:,:) = 0.0
+    allocate(CS%ddt_Us_x(G%isdB:G%IedB,G%jsd:G%jed,G%ke))
+  CS%ddt_Us_x(:,:,:) = 0.0
+  allocate(CS%ddt_Us_y(G%isd:G%Ied,G%jsdB:G%jedB,G%ke))
+  CS%ddt_Us_y(:,:,:) = 0.0
   ! b. Surface Values
   allocate(CS%US0_x(G%isdB:G%iedB,G%jsd:G%jed))
   CS%US0_x(:,:) = 0.0
@@ -398,6 +417,10 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag )
        CS%diag%axesCvL,Time,'Stokes drift (meridional)','m s-1')
   CS%id_3dstokes_x = register_diag_field('ocean_model','u_Stokes', &
        CS%diag%axesCuL,Time,'Stokes drift (zonal)','m s-1')
+  CS%id_ddt_3dstokes_y = register_diag_field('ocean_model','dvdt_Stokes', &
+       CS%diag%axesCvL,Time,'d/dt Stokes drift (meridional)','m s-2')
+  CS%id_ddt_3dstokes_x = register_diag_field('ocean_model','dudt_Stokes', &
+       CS%diag%axesCuL,Time,'d/dt Stokes drift (zonal)','m s-2')
   CS%id_PFv_Stokes = register_diag_field('ocean_model','PFv_Stokes', &
        CS%diag%axesCvL,Time,'PF from Stokes drift (meridional)','m s-2')
   CS%id_PFu_Stokes = register_diag_field('ocean_model','PFu_Stokes', &
@@ -494,7 +517,7 @@ end subroutine Update_Surface_Waves
 
 !> Constructs the Stokes Drift profile on the model grid based on
 !! desired coupling options
-subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
+subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces, dt)
   type(wave_parameters_CS),  pointer     :: CS    !< Wave parameter Control structure
   type(ocean_grid_type),   intent(inout) :: G     !< Grid structure
   type(verticalGrid_type), intent(in)    :: GV    !< Vertical grid structure
@@ -502,6 +525,7 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
   type(mech_forcing), intent(in)         :: forces !< Container with mechanical forcing terms
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)), &
        intent(in)    :: h     !< Thickness [H ~> m or kg m-2]
+  real :: dt
   ! Local Variables
   real    :: Top, MidPoint, Bottom, one_cm
   real    :: DecayScale
@@ -509,9 +533,15 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
   real    :: La
   integer :: ii, jj, kk, b, iim1, jjm1
   real :: ustary, ustarx, tauy, taux, u10, ustar
+  real :: idt
 
+
+  idt = 1./dt
   one_cm = 0.01*US%m_to_Z
 
+  CS%ddt_us_x(:,:,:) = CS%US_x(:,:,:)
+  CS%ddt_us_y(:,:,:) = CS%US_y(:,:,:)
+  
   ! 1. If Test Profile Option is chosen
   !    Computing mid-point value from surface value and decay wavelength
   if (CS%WaveMethod==TESTPROF) then
@@ -754,6 +784,9 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
     CS%La_turb(ii,jj) = La
   enddo ; enddo
 
+  CS%ddt_us_x(:,:,:) = (CS%US_x(:,:,:) - CS%ddt_us_x(:,:,:)) * idt
+  CS%ddt_us_y(:,:,:) = (CS%US_y(:,:,:) - CS%ddt_us_y(:,:,:)) * idt
+  
   ! Output any desired quantities
   if (CS%id_surfacestokes_y>0) &
     call post_data(CS%id_surfacestokes_y, CS%us0_y, CS%diag)
@@ -761,6 +794,10 @@ subroutine Update_Stokes_Drift(G, GV, US, CS, h, forces)
     call post_data(CS%id_surfacestokes_x, CS%us0_x, CS%diag)
   if (CS%id_3dstokes_y>0) &
     call post_data(CS%id_3dstokes_y, CS%us_y, CS%diag)
+  if (CS%id_ddt_3dstokes_x>0) &
+       call post_data(CS%id_ddt_3dstokes_x, CS%ddt_us_x, CS%diag)
+  if (CS%id_ddt_3dstokes_y>0) &
+    call post_data(CS%id_ddt_3dstokes_y, CS%ddt_us_y, CS%diag)
   if (CS%id_3dstokes_x>0) &
     call post_data(CS%id_3dstokes_x, CS%us_x, CS%diag)
   if (CS%id_La_turb>0) &

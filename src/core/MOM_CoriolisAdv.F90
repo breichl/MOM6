@@ -7,6 +7,7 @@ module MOM_CoriolisAdv
 
 use MOM_diag_mediator, only : post_data, query_averaging_enabled, diag_ctrl
 use MOM_diag_mediator, only : register_diag_field, safe_alloc_ptr, time_type
+use MOM_domains,       only : pass_vector
 use MOM_error_handler, only : MOM_error, MOM_mesg, FATAL, WARNING
 use MOM_file_parser,   only : get_param, log_version, param_file_type
 use MOM_grid,          only : ocean_grid_type
@@ -79,6 +80,7 @@ type, public :: CoriolisAdv_CS ; private
   integer :: id_hf_gKEu_2d = -1, id_hf_gKEv_2d = -1
   ! integer :: id_hf_rvxu    = -1, id_hf_rvxv    = -1
   integer :: id_hf_rvxu_2d = -1, id_hf_rvxv_2d = -1
+  integer :: id_CAuS = -1, id_CAvS = -1
   !>@}
 end type CoriolisAdv_CS
 
@@ -137,6 +139,7 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
   ! Local variables
   real, dimension(SZIB_(G),SZJB_(G)) :: &
     q, &        ! Layer potential vorticity [H-1 T-1 ~> m-1 s-1 or m2 kg-1 s-1].
+    qS, &        ! Layer potential vorticity [H-1 T-1 ~> m-1 s-1 or m2 kg-1 s-1].
     Ih_q, &     ! The inverse of thickness interpolated to q points [H-1 ~> m-1 or m2 kg-1].
     Area_q      ! The sum of the ocean areas at the 4 adjacent thickness points [L2 ~> m2].
 
@@ -170,6 +173,7 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
                 ! discretization [H-1 s-1 ~> m-1 s-1 or m2 kg-1 s-1].
   real, dimension(SZIB_(G),SZJB_(G)) :: &
     dvdx, dudy, & ! Contributions to the circulation around q-points [L2 T-1 ~> m2 s-1]
+    dvSdx, duSdy, & ! idem. for Stokes drift [L2 T-1 ~> m2 s-1]
     abs_vort, & ! Absolute vorticity at q-points [T-1 ~> s-1].
     q2, &       ! Relative vorticity over thickness [H-1 T-1 ~> m-1 s-1 or m2 kg-1 s-1].
     max_fvq, &  ! The maximum of the adjacent values of (-u) times absolute vorticity [L T-2 ~> m s-2].
@@ -179,6 +183,8 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
   real, dimension(SZIB_(G),SZJB_(G),SZK_(G)) :: &
     PV, &       ! A diagnostic array of the potential vorticities [H-1 T-1 ~> m-1 s-1 or m2 kg-1 s-1].
     RV          ! A diagnostic array of the relative vorticities [T-1 ~> s-1].
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)) :: &    CAuS
+  real, dimension(SZI_(G),SZJB_(G),SZK_(G)) :: &    CAvS
   real :: fv1, fv2, fu1, fu2   ! (f+rv)*v or (f+rv)*u [L T-2 ~> m s-2].
   real :: max_fv, max_fu       ! The maximum or minimum of the neighboring Coriolis
   real :: min_fv, min_fu       ! accelerations [L T-2 ~> m s-2], i.e. max(min)_fu(v)q.
@@ -187,6 +193,7 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
   real, parameter :: C1_24=1.0/24.0 ! C1_24 = 1/24
   real :: absolute_vorticity     ! Absolute vorticity [T-1 ~> s-1].
   real :: relative_vorticity     ! Relative vorticity [T-1 ~> s-1].
+  real :: stokes_vorticity     ! Relative vorticity [T-1 ~> s-1].
   real :: Ih                     ! Inverse of thickness [H-1 ~> m-1 or m2 kg-1].
   real :: max_Ihq, min_Ihq       ! The maximum and minimum of the nearby Ihq [H-1 ~> m-1 or m2 kg-1].
   real :: hArea_q                ! The sum of area times thickness of the cells
@@ -216,7 +223,7 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
   real :: UHeff, VHeff  ! More temporary variables [H L2 T-1 ~> m3 s-1 or kg s-1].
   real :: QUHeff,QVHeff ! More temporary variables [H L2 T-1 s-1 ~> m3 s-2 or kg s-2].
   integer :: i, j, k, n, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
-  logical :: Stokes_VF
+  logical :: Stokes_VF, Passive_Stokes_VF
 
 ! Diagnostics for fractional thickness-weighted terms
   real, allocatable, dimension(:,:) :: &
@@ -285,12 +292,27 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
     if (Stokes_VF) Stokes_VF = associated(Waves)
     if (Stokes_VF) Stokes_VF = Waves%Stokes_VF
     if (Stokes_VF) then
-      do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
-        dvdx(I,J) = ((v(i+1,J,k)-Waves%us_y(i+1,J,k))*G%dyCv(i+1,J) - &
-                     (v(i,J,k)-Waves%us_y(i,J,k))*G%dyCv(i,J))
-        dudy(I,J) = ((u(I,j+1,k)-Waves%us_x(I,j+1,k))*G%dxCu(I,j+1) - &
-                     (u(I,j,k)-Waves%us_x(I,j,k))*G%dxCu(I,j))
-      enddo; enddo
+      if (CS%id_CAuS>0 .or. CS%id_CAvS>0) then
+        do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
+          dvSdx(I,J) = ((-Waves%us_y(i+1,J,k))*G%dyCv(i+1,J) - &
+                        (-Waves%us_y(i,J,k))*G%dyCv(i,J))
+          duSdy(I,J) = ((-Waves%us_x(I,j+1,k))*G%dxCu(I,j+1) - &
+                        (-Waves%us_x(I,j,k))*G%dxCu(I,j))
+        enddo; enddo
+      endif
+      if (Passive_Stokes_VF) then
+        do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
+          dvdx(I,J) = (v(i+1,J,k)*G%dyCv(i+1,J) - v(i,J,k)*G%dyCv(i,J))
+          dudy(I,J) = (u(I,j+1,k)*G%dxCu(I,j+1) - u(I,j,k)*G%dxCu(I,j))
+        enddo; enddo
+      else
+        do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
+          dvdx(I,J) = ((v(i+1,J,k)-Waves%us_y(i+1,J,k))*G%dyCv(i+1,J) - &
+                       (v(i,J,k)-Waves%us_y(i,J,k))*G%dyCv(i,J))
+          dudy(I,J) = ((u(I,j+1,k)-Waves%us_x(I,j+1,k))*G%dxCu(I,j+1) - &
+                       (u(I,j,k)-Waves%us_x(I,j,k))*G%dxCu(I,j))
+        enddo; enddo
+      endif
     else
       do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
         dvdx(I,J) = (v(i+1,J,k)*G%dyCv(i+1,J) - v(i,J,k)*G%dyCv(i,J))
@@ -438,6 +460,8 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
     enddo ; endif
 
     do J=Jsq-1,Jeq+1 ; do I=Isq-1,Ieq+1
+      if (CS%id_CAuS>0 .or. CS%id_CAvS>0) &
+           stokes_vorticity = G%mask2dBu(I,J) * (dvSdx(I,J) - duSdy(I,J)) * G%IareaBu(I,J)
       if (CS%no_slip ) then
         relative_vorticity = (2.0-G%mask2dBu(I,J)) * (dvdx(I,J) - dudy(I,J)) * G%IareaBu(I,J)
       else
@@ -450,6 +474,8 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
         Ih = Area_q(i,j) / (hArea_q + h_neglect*Area_q(i,j))
       endif
       q(I,J) = absolute_vorticity * Ih
+      if (CS%id_CAuS>0 .or. CS%id_CAvS>0) &
+           qS(I,J) = stokes_vorticity * Ih
       abs_vort(I,J) = absolute_vorticity
       Ih_q(I,J) = Ih
 
@@ -680,6 +706,14 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
             (ep_u(i,j)*uh(I-1,j,k) - ep_u(i+1,j)*uh(I+1,j,k)) * G%IdxCu(I,j)
     enddo ; enddo ; endif
 
+    if (CS%id_CAuS>0 .or. CS%id_CAvS>0) then
+      ! Computing the diagnostic Stokes contribution to CAu
+      do j=js,je ; do I=Isq,Ieq
+        CAuS(I,j,k) = 0.25 * &
+              (qS(I,J) * (vh(i+1,J,k) + vh(i,J,k)) + &
+               qS(I,J-1) * (vh(i,J-1,k) + vh(i+1,J-1,k))) * G%IdxCu(I,j)
+      enddo ; enddo
+    endif
 
     if (CS%bound_Coriolis) then
       do j=js,je ; do I=Isq,Ieq
@@ -789,6 +823,15 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
             (ep_v(i,j)*vh(i,J-1,k) - ep_v(i,j+1)*vh(i,J+1,k)) * G%IdyCv(i,J)
     enddo ; enddo ; endif
 
+    if (CS%id_CAuS>0 .or. CS%id_CAvS>0) then
+      ! Computing the diagnostic Stokes contribution to CAv
+      do J=Jsq,Jeq ; do i=is,ie
+        CAvS(I,j,k) = 0.25 * &
+              (qS(I,J) * (uh(I,j+1,k) + uh(I,j,k)) + &
+               qS(I,J-1) * (uh(I-1,j,k) + uh(I-1,j+1,k))) * G%IdyCv(i,J)
+      enddo; enddo
+    endif
+
     if (CS%bound_Coriolis) then
       do J=Jsq,Jeq ; do i=is,ie
         max_fu = MAX(max_fuq(I,J),max_fuq(I-1,J))
@@ -858,6 +901,8 @@ subroutine CorAdCalc(u, v, h, uh, vh, CAu, CAv, OBC, AD, G, GV, US, CS, Waves)
     if (CS%id_gKEv>0) call post_data(CS%id_gKEv, AD%gradKEv, CS%diag)
     if (CS%id_rvxu > 0) call post_data(CS%id_rvxu, AD%rv_x_u, CS%diag)
     if (CS%id_rvxv > 0) call post_data(CS%id_rvxv, AD%rv_x_v, CS%diag)
+    if (CS%id_CAuS > 0) call post_data(CS%id_CAuS, CAuS, CS%diag)
+    if (CS%id_CAvS > 0) call post_data(CS%id_CAvS, CAvS, CS%diag)
 
     ! Diagnostics for terms multiplied by fractional thicknesses
 
@@ -1192,6 +1237,14 @@ subroutine CoriolisAdv_init(Time, G, GV, US, param_file, diag, AD, CS)
   CS%id_rvxv = register_diag_field('ocean_model', 'rvxv', diag%axesCuL, Time, &
      'Zonal Acceleration from Relative Vorticity', 'm-1 s-2', conversion=US%L_T2_to_m_s2)
   if (CS%id_rvxv > 0) call safe_alloc_ptr(AD%rv_x_v,IsdB,IedB,jsd,jed,nz)
+
+  CS%id_CAuS = register_diag_field('ocean_model', 'CAuS', diag%axesCuL, Time, &
+     'Zonal Acceleration from Stokes Vorticity', 'm-1 s-2', conversion=US%L_T2_to_m_s2)
+  ! add to AD
+
+  CS%id_CAvS = register_diag_field('ocean_model', 'CAvS', diag%axesCvL, Time, &
+     'Meridional Acceleration from Stokes Vorticity', 'm-1 s-2', conversion=US%L_T2_to_m_s2)
+  ! add to AD
 
   !CS%id_hf_gKEu = register_diag_field('ocean_model', 'hf_gKEu', diag%axesCuL, Time, &
   !   'Fractional Thickness-weighted Zonal Acceleration from Grad. Kinetic Energy', &
