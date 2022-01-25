@@ -75,6 +75,8 @@ type, public :: diabatic_aux_CS ; private
   integer :: id_penSW_diag     = -1 !< Diagnostic ID of Penetrative shortwave heating (flux convergence)
   integer :: id_penSWflux_diag = -1 !< Diagnostic ID of Penetrative shortwave flux
   integer :: id_nonpenSW_diag  = -1 !< Diagnostic ID of Non-penetrative shortwave heating
+  integer :: id_surfbuoyflux = -1   !< Diagnostic ID of total surface buoyancy flux
+  integer :: id_penSW_surfbuoyflux = -1 !< Diagnostic ID of surface buoyancy flux due to shortwave heating
   integer :: id_Chl            = -1 !< Diagnostic ID of chlorophyll-A handles for opacity
 
   ! Optional diagnostic arrays
@@ -86,6 +88,11 @@ type, public :: diabatic_aux_CS ; private
                                                         !! layer [Q R Z T-1 ~> W m-2]
   real, allocatable, dimension(:,:)   :: nonpenSW_diag  !< Non-downwelling SW radiation at ocean
                                                         !! surface [Q R Z T-1 ~> W m-2]
+  real, allocatable, dimension(:,:)   :: surfbuoyflux   !< Surface Buoyancy flux due to all
+                                                        !! sources [H2 T-3 ~> m2 s-3]
+  real, allocatable, dimension(:,:)   :: penSW_surfbuoyflux !< Surface Buoyancy flux due to
+                                                            !! penetrative SW radiation
+                                                            !! [H2 T-3 ~> m2 s-3]
 
 end type diabatic_aux_CS
 
@@ -1080,7 +1087,7 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
   real    :: GoRho    ! g_Earth times a unit conversion factor divided by density
                       ! [Z T-2 R-1 ~> m4 s-2 kg-1]
   logical :: calculate_energetics
-  logical :: calculate_buoyancy
+  logical :: calculate_buoyancy, calculate_skinbuoyflux
   integer, dimension(2) :: EOSdom ! The i-computational domain for the equation of state
   integer :: i, j, is, ie, js, je, k, nz, n, nb
   character(len=45) :: mesg
@@ -1090,8 +1097,10 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
   Idt = 1.0 / dt
 
   calculate_energetics = (present(cTKE) .and. present(dSV_dT) .and. present(dSV_dS))
-  calculate_buoyancy = present(SkinBuoyFlux)
-  if (calculate_buoyancy) SkinBuoyFlux(:,:) = 0.0
+  calculate_skinbuoyflux = present(SkinBuoyFlux)
+  if (calculate_skinbuoyflux) SkinBuoyFlux(:,:) = 0.0
+  calculate_buoyancy = ((CS%id_surfbuoyflux>0) .or. (CS%id_penSW_surfbuoyflux>0) &
+                        .or. calculate_skinbuoyflux)
   if (present(cTKE)) cTKE(:,:,:) = 0.0
   g_Hconv2 = (US%L_to_Z**2*GV%g_Earth * GV%H_to_RZ) * GV%H_to_RZ
   EOSdom(:) = EOS_domain(G%HI)
@@ -1509,11 +1518,30 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
       ! surface buoyancy flux affecting the top layer.
       ! 3. Convert to a buoyancy flux, excluding penetrating SW heating
       !    BGR-Jul 5, 2017: The contribution of SW heating here needs investigated for ePBL.
-      do i=is,ie
-        SkinBuoyFlux(i,j) = - GoRho * GV%H_to_Z * &
-            (dRhodS(i) * (netSalt_rate(i) - tv%S(i,j,1)*netMassInOut_rate(i)) + &
-             dRhodT(i) * ( netHeat_rate(i) + netPen_rate(i)) ) ! [Z2 T-3 ~> m2 s-3]
-      enddo
+      if (calculate_skinbuoyflux) then
+        do i=is,ie
+          SkinBuoyFlux(i,j) = - GoRho * GV%H_to_Z * &
+                                (dRhodS(i) * (netSalt_rate(i) - tv%S(i,j,1)*netMassInOut_rate(i)) + &
+                                dRhodT(i) * ( netHeat_rate(i) + netPen_rate(i)) ) ! [Z2 T-3 ~> m2 s-3]
+        enddo
+      endif
+      if (CS%id_surfbuoyflux>0 .and. calculate_skinbuoyflux) then
+        do i=is,ie
+          CS%surfbuoyflux(i,j) = SkinBuoyFlux(i,j)
+        enddo
+      elseif (CS%id_surfbuoyflux<0.) then
+        do i=is,ie
+          CS%surfbuoyflux(i,j) = - GoRho * GV%H_to_Z * &
+                                   (dRhodS(i) * (netSalt_rate(i) - tv%S(i,j,1)*netMassInOut_rate(i)) + &
+                                    dRhodT(i) * ( netHeat_rate(i) + netPen_rate(i) ) ) ! [Z2 T-3 ~> m2 s-3]
+        enddo
+      endif
+      if (CS%id_penSW_surfbuoyflux>0) then
+        do i=is,ie
+          CS%penSW_surfbuoyflux(i,j) = - GoRho * GV%H_to_Z * &
+                                         (dRhodT(i) * ( netPen_rate(i) ) ) ! [Z2 T-3 ~> m2 s-3]
+        enddo
+      endif
     endif
 
   enddo ! j-loop finish
@@ -1523,6 +1551,9 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
   if (CS%id_penSW_diag     > 0) call post_data(CS%id_penSW_diag    , CS%penSW_diag    , CS%diag)
   if (CS%id_penSWflux_diag > 0) call post_data(CS%id_penSWflux_diag, CS%penSWflux_diag, CS%diag)
   if (CS%id_nonpenSW_diag  > 0) call post_data(CS%id_nonpenSW_diag , CS%nonpenSW_diag , CS%diag)
+  if (CS%id_surfbuoyflux  > 0) call post_data(CS%id_surfbuoyflux , CS%surfbuoyflux , CS%diag)
+  if (CS%id_penSW_surfbuoyflux  > 0) call post_data(CS%id_penSW_surfbuoyflux , CS%penSW_surfbuoyflux , CS%diag)
+
 
 ! The following check will be ignored if ignore_fluxes_over_land = true
   if (numberOfGroundings>0 .and. .not. CS%ignore_fluxes_over_land) then
@@ -1670,6 +1701,26 @@ subroutine diabatic_aux_init(Time, G, GV, US, param_file, diag, CS, useALEalgori
     if (CS%id_nonpenSW_diag > 0) then
       allocate(CS%nonpenSW_diag(isd:ied,jsd:jed), source=0.0)
     endif
+
+    ! diagnostic for non SW buoy flux
+    CS%id_surfbuoyflux = register_diag_field('ocean_model', 'BF0', &
+          diag%axesT1, Time, &
+          'Total surface buoyancy flux (including penetrative SW)', &
+          'm2 s-3', conversion=GV%H_to_m**2*US%s_to_T**3, &
+          standard_name='')
+    if (CS%id_surfbuoyflux > 0) then
+      allocate(CS%surfbuoyflux(isd:ied,jsd:jed), source=0.0)
+    endif
+
+    ! diagnostic for surface SW buoy flux
+    CS%id_penSW_surfbuoyflux = register_diag_field('ocean_model', 'BF0_penSW', &
+          diag%axesT1, Time, &
+          'Surface buoyancy flux due to penetrative SW radiation', &
+          'm2 s-3', conversion=GV%H_to_m**2*US%s_to_T**3, &
+          standard_name='')
+    if (CS%id_penSW_surfbuoyflux > 0) then
+      allocate(CS%penSW_surfbuoyflux(isd:ied,jsd:jed), source=0.0)
+    endif
   endif
 
   if (use_temperature) then
@@ -1718,6 +1769,8 @@ subroutine diabatic_aux_end(CS)
   if (CS%id_penSW_diag     >0) deallocate(CS%penSW_diag)
   if (CS%id_penSWflux_diag >0) deallocate(CS%penSWflux_diag)
   if (CS%id_nonpenSW_diag  >0) deallocate(CS%nonpenSW_diag)
+  if (CS%id_surfbuoyflux  >0) deallocate(CS%surfbuoyflux)
+  if (CS%id_penSW_surfbuoyflux  >0) deallocate(CS%penSW_surfbuoyflux)
 
   if (associated(CS)) deallocate(CS)
 
