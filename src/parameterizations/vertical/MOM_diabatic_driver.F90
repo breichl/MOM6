@@ -32,6 +32,7 @@ use MOM_energetic_PBL,       only : energetic_PBL_get_MLD
 use MOM_entrain_diffusive,   only : entrainment_diffusive, entrain_diffusive_init
 use MOM_entrain_diffusive,   only : entrain_diffusive_end, entrain_diffusive_CS
 use MOM_EOS,                 only : calculate_density, calculate_TFreeze, EOS_domain
+use MOM_EOS,                 only : calculate_density_derivs
 use MOM_error_handler,       only : MOM_error, FATAL, WARNING, callTree_showQuery,MOM_mesg
 use MOM_error_handler,       only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser,         only : get_param, log_version, param_file_type, read_param
@@ -178,6 +179,7 @@ type, public:: diabatic_CS; private
   integer :: id_ea_t     = -1, id_eb_t     = -1, id_ea_s   = -1, id_eb_s     = -1
   integer :: id_Kd_heat  = -1, id_Kd_salt  = -1, id_Kd_int = -1, id_Kd_ePBL  = -1
   integer :: id_Tdif     = -1, id_Sdif     = -1, id_Tadv   = -1, id_Sadv     = -1
+  integer :: id_Bdif     = -1
   ! These are handles to diagnostics related to the mixed layer properties.
   integer :: id_MLD_003 = -1, id_MLD_0125 = -1, id_MLD_user = -1, id_mlotstsq = -1
   integer :: id_MLD_EN1 = -1, id_MLD_EN2  = -1, id_MLD_EN3  = -1, id_subMLN2  = -1
@@ -500,10 +502,14 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
                 ! Kd_int [Z2 T-1 ~> m2 s-1].
     Kd_ePBL,  & ! test array of diapycnal diffusivities at interfaces [Z2 T-1 ~> m2 s-1]
     Tdif_flx, & ! diffusive diapycnal heat flux across interfaces [degC H T-1 ~> degC m s-1 or degC kg m-2 s-1]
-    Sdif_flx    ! diffusive diapycnal salt flux across interfaces [ppt H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    Sdif_flx, & ! diffusive diapycnal salt flux across interfaces [ppt H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    Bdif_flx    ! diffusive diapycnal buoyancy flux across interfaces [H2 T-3 ~> m2 s-3 or kg m-1 s-3]
 
   real, dimension(SZI_(G),SZJ_(G)) :: &
     SkinBuoyFlux ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+
+  real, dimension(SZI_(G)) :: &
+       p_i, d_pres, T_i, S_i, drhodS, drhodT
 
   logical, dimension(SZI_(G)) :: &
     in_boundary  ! True if there are no massive layers below, where massive is defined as
@@ -524,6 +530,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
 
   real :: Ent_int ! The diffusive entrainment rate at an interface [H ~> m or kg m-2]
   real :: Idt     ! The inverse time step [T-1 ~> s-1]
+  real :: g_rho0 ! gravity / rho0
+  integer, dimension(2) :: EOSdom ! The i-computational domain for the equation of state
 
   integer :: dir_flag     ! An integer encoding the directions in which to do halo updates.
   logical :: showCallTree ! If true, show the call tree
@@ -535,6 +543,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
   Isq  = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
   h_neglect = GV%H_subroundoff ; h_neglect2 = h_neglect*h_neglect
   Kd_heat(:,:,:) = 0.0 ; Kd_salt(:,:,:) = 0.0
+
+  g_rho0 = GV%g_Earth / (GV%Rho0)
 
   showCallTree = callTree_showQuery()
   if (showCallTree) call callTree_enter("diabatic_ALE_legacy(), MOM_diabatic_driver.F90")
@@ -937,6 +947,34 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Tim
     enddo ; enddo ; enddo
     if (CS%id_Sdif > 0) call post_data(CS%id_Sdif, Sdif_flx, CS%diag)
   endif
+  if (CS%id_Bdif > 0) then
+    EOSdom(:) = EOS_domain(G%HI)
+    do j=js,je ; do i=is,ie
+      Bdif_flx(i,j,1) = 0.0 ; Bdif_flx(i,j,nz+1) = 0.0
+    enddo ; enddo
+    !$OMP parallel do default(shared)
+    do j=js,je
+      if (associated(tv%p_surf)) then
+        do i=is,ie ; p_i(i) = tv%p_surf(i,j) ; enddo
+      else
+        do i=is,ie ; p_i(i) = 0.0 ; enddo
+      endif
+      do K=2,nz
+        do i=is,ie
+          d_pres(i) = (GV%g_Earth * GV%H_to_RZ) * h(i,j,k-1)
+          p_i(i) = p_i(i) + d_pres(i)
+        enddo
+        T_i = 0.5*(tv%T(:,j,k-1)+tv%T(:,j,k))
+        S_i = 0.5*(tv%S(:,j,k-1)+tv%S(:,j,k))
+        call calculate_density_derivs(T_i, S_i, p_i, dRhodT, dRhodS, tv%eqn_of_state, EOSdom)
+        do i=is,ie
+          Bdif_flx(i,j,K) = ( (Idt * ent_s(i,j,K)) * (tv%S(i,j,k-1) - tv%S(i,j,k))*g_rho0*dRhodS(i) &
+                             +(Idt * ent_t(i,j,K)) * (tv%T(i,j,k-1) - tv%T(i,j,k))*g_rho0*dRhodT(i))
+        enddo
+      enddo
+    enddo
+    call post_data(CS%id_Bdif, Bdif_flx, CS%diag)
+  endif
 
   ! mixing of passive tracers from massless boundary layers to interior
   call cpu_clock_begin(id_clock_tracers)
@@ -1084,10 +1122,13 @@ subroutine diabatic_ALE(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, 
                 ! Kd_int returned from set_diffusivity [Z2 T-1 ~> m2 s-1].
     Kd_ePBL,  & ! boundary layer or convective diapycnal diffusivities at interfaces [Z2 T-1 ~> m2 s-1]
     Tdif_flx, & ! diffusive diapycnal heat flux across interfaces [degC H T-1 ~> degC m s-1 or degC kg m-2 s-1]
-    Sdif_flx    ! diffusive diapycnal salt flux across interfaces [ppt H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
-
+    Sdif_flx, & ! diffusive diapycnal salt flux across interfaces [ppt H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    Bdif_flx    ! diffusive diapycnal buoyancy flux across interfaces [H2 T-3 ~> m2 s-3 or kg m-1 s-3]
   real, dimension(SZI_(G),SZJ_(G)) :: &
     SkinBuoyFlux ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+
+  real, dimension(SZI_(G)) :: &
+    p_i, d_pres, T_i, S_i, drhodS, drhodT
 
   logical, dimension(SZI_(G)) :: &
     in_boundary  ! True if there are no massive layers below, where massive is defined as
@@ -1106,6 +1147,8 @@ subroutine diabatic_ALE(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, 
   real :: htot(SZIB_(G)) ! The summed thickness from the bottom [H ~> m or kg m-2].
   real :: Kd_add_here    ! An added diffusivity [Z2 T-1 ~> m2 s-1].
   real :: Idt     ! The inverse time step [T-1 ~> s-1]
+  real :: g_rho0 ! gravity / rho0
+  integer, dimension(2) :: EOSdom ! The i-computational domain for the equation of state
 
   integer :: dir_flag     ! An integer encoding the directions in which to do halo updates.
   logical :: showCallTree ! If true, show the call tree
@@ -1116,6 +1159,8 @@ subroutine diabatic_ALE(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, 
   h_neglect = GV%H_subroundoff ; h_neglect2 = h_neglect*h_neglect
   Kd_heat(:,:,:) = 0.0 ; Kd_salt(:,:,:) = 0.0
   ent_s(:,:,:) = 0.0 ; ent_t(:,:,:) = 0.0
+
+  g_rho0 = GV%g_Earth / (GV%Rho0)
 
   showCallTree = callTree_showQuery()
   if (showCallTree) call callTree_enter("diabatic_ALE(), MOM_diabatic_driver.F90")
@@ -1464,6 +1509,34 @@ subroutine diabatic_ALE(u, v, h, tv, Hml, fluxes, visc, ADp, CDp, dt, Time_end, 
       Sdif_flx(i,j,K) = (Idt * ent_s(i,j,K)) * (tv%S(i,j,k-1) - tv%S(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_Sdif > 0) call post_data(CS%id_Sdif, Sdif_flx, CS%diag)
+  endif
+  if (CS%id_Bdif > 0) then
+    EOSdom(:) = EOS_domain(G%HI)
+    do j=js,je ; do i=is,ie
+      Bdif_flx(i,j,1) = 0.0 ; Bdif_flx(i,j,nz+1) = 0.0
+    enddo ; enddo
+    !$OMP parallel do default(shared)
+    do j=js,je
+      if (associated(tv%p_surf)) then
+        do i=is,ie ; p_i(i) = tv%p_surf(i,j) ; enddo
+      else
+        do i=is,ie ; p_i(i) = 0.0 ; enddo
+      endif
+      do K=2,nz
+        do i=is,ie
+          d_pres(i) = (GV%g_Earth * GV%H_to_RZ) * h(i,j,k-1)
+          p_i(i) = p_i(i) + d_pres(i)
+        enddo
+        T_i = 0.5*(tv%T(:,j,k-1)+tv%T(:,j,k))
+        S_i = 0.5*(tv%S(:,j,k-1)+tv%S(:,j,k))
+        call calculate_density_derivs(T_i, S_i, p_i, dRhodT, dRhodS, tv%eqn_of_state, EOSdom)
+        do i=is,ie
+          Bdif_flx(i,j,K) = ( (Idt * ent_s(i,j,K)) * (tv%S(i,j,k-1) - tv%S(i,j,k))*g_rho0*dRhodS(i) &
+                             +(Idt * ent_t(i,j,K)) * (tv%T(i,j,k-1) - tv%T(i,j,k))*g_rho0*dRhodT(i))
+        enddo
+      enddo
+    enddo
+    call post_data(CS%id_Bdif, Bdif_flx, CS%diag)
   endif
 
   ! mixing of passive tracers from massless boundary layers to interior
@@ -3117,6 +3190,9 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
           Time, "Advective diapycnal salnity flux across interfaces", &
           "psu m s-1", conversion=GV%H_to_m*US%s_to_T)
     endif
+    CS%id_Bdif = register_diag_field('ocean_model',"Bflx_dia_diff", diag%axesTi, &
+        Time, "Diffusive diapycnal buoyancy flux across interfaces", &
+        "m2 s-3", conversion=GV%H_to_m**2*US%s_to_T**3)
     CS%id_MLD_003 = register_diag_field('ocean_model', 'MLD_003', diag%axesT1, Time, &
         'Mixed layer depth (delta rho = 0.03)', 'm', conversion=US%Z_to_m, &
         cmor_field_name='mlotst', cmor_long_name='Ocean Mixed Layer Thickness Defined by Sigma T', &
