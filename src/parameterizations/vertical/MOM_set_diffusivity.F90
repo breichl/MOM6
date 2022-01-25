@@ -22,6 +22,8 @@ use MOM_file_parser,         only : get_param, log_param, log_version, param_fil
 use MOM_forcing_type,        only : forcing, optics_type
 use MOM_full_convection,     only : full_convection
 use MOM_grid,                only : ocean_grid_type
+use MOM_GOTM,                only : GOTM_CS, GOTM_init, GOTM_calculate, GOTM_calculate_vertex, GOTM_end
+use MOM_GOTM,                only : GOTM_at_vertex
 use MOM_internal_tides,      only : int_tide_CS, get_lowmode_loss
 use MOM_intrinsic_functions, only : invcosh
 use MOM_io,                  only : slasher, MOM_read_data
@@ -141,6 +143,8 @@ type, public :: set_diffusivity_CS ; private
                               !! at the cell vertices (i.e., the vorticity points).
   logical :: use_CVMix_shear  !< If true, use one of the CVMix modules to find
                               !! shear-driven diapycnal diffusivity.
+  logical :: useGOTM          !< If true, use one of the GOTM modules to find
+                              !! vertical mixing coefficients
   logical :: double_diffusion !< If true, enable double-diffusive mixing using an old method.
   logical :: use_CVMix_ddiff  !< If true, enable double-diffusive mixing via CVMix.
   logical :: use_tidal_mixing !< If true, activate tidal mixing diffusivity.
@@ -162,6 +166,7 @@ type, public :: set_diffusivity_CS ; private
   type(bkgnd_mixing_cs),     pointer :: bkgnd_mixing_csp     => NULL() !< Control structure for a child module
   type(int_tide_CS),         pointer :: int_tide_CSp         => NULL() !< Control structure for a child module
   type(tidal_mixing_cs),     pointer :: tidal_mixing_CSp     => NULL() !< Control structure for a child module
+  type(GOTM_CS),             pointer :: GOTM_CSp             => NULL() !< Control structure for a child module
 
   !>@{ Diagnostic IDs
   integer :: id_maxTKE     = -1, id_TKE_to_Kd   = -1, id_Kd_user    = -1
@@ -260,6 +265,8 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, &
     dRho_int, &   !< Locally referenced potential density difference across interfaces [R ~> kg m-3]
     KT_extra, &   !< Double difusion diffusivity of temperature [Z2 T-1 ~> m2 s-1]
     KS_extra      !< Double difusion diffusivity of salinity [Z2 T-1 ~> m2 s-1]
+
+  real ,dimension(SZI_(G),SZJ_(G),SZK_(G)+1) ::  Kd_tmp
 
   real :: dissip        ! local variable for dissipation calculations [Z2 R T-3 ~> W m-3]
   real :: Omega2        ! squared absolute rotation rate [T-2 ~> s-2]
@@ -364,6 +371,18 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, &
       call hchksum(visc%Kd_shear, "after CVMix_shear visc%Kd_shear", G%HI, scale=US%Z2_T_to_m2_s)
       call hchksum(visc%Kv_shear, "after CVMix_shear visc%Kv_shear", G%HI, scale=US%Z2_T_to_m2_s)
     endif
+  elseif (CS%useGOTM) then
+    !GOTM has options for separate thermal and salt diffusivities.  We don't use that here, so
+    ! we are throwing away the salt as Kd_tmp.
+    Kd_tmp(:,:,:) = 0.0
+    if (CS%Vertex_shear) then
+      call GOTM_calculate_vertex(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+           fluxes%ustar, visc%Kd_shear,Kd_tmp, visc%Kv_shear_Bu )
+      if (associated(visc%Kv_shear)) visc%Kv_shear(:,:,:) = 0.0 ! needed for other parameterizations
+    else
+      call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
+           fluxes%ustar, visc%Kd_shear, Kd_tmp, visc%Kv_shear )
+    endif
   elseif (associated(visc%Kv_shear)) then
     visc%Kv_shear(:,:,:) = 0.0 ! needed if calculate_kappa_shear is not enabled
   endif
@@ -467,7 +486,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, &
     endif
 
     ! Add the input turbulent diffusivity.
-    if (CS%useKappaShear .or. CS%use_CVMix_shear) then
+    if (CS%useKappaShear .or. CS%use_CVMix_shear .or. CS%useGOTM) then
       if (present(Kd_int)) then
         do K=2,nz ; do i=is,ie
           Kd_int_2d(i,K) = visc%Kd_shear(i,j,K) + 0.5 * (Kd_lay_2d(i,k-1) + Kd_lay_2d(i,k))
@@ -2017,6 +2036,7 @@ subroutine set_diffusivity_init(Time, G, GV, US, param_file, diag, CS, int_tide_
   logical :: TKE_to_Kd_used  ! If true, TKE_to_Kd and maxTKE need to be calculated.
   integer :: i, j, is, ie, js, je
   integer :: isd, ied, jsd, jed
+  logical :: KS_Vertex_Shear, GOTM_Vertex_Shear
 
   if (associated(CS)) then
     call MOM_error(WARNING, "diabatic_entrain_init called with an associated "// &
@@ -2293,10 +2313,17 @@ subroutine set_diffusivity_init(Time, G, GV, US, param_file, diag, CS, int_tide_
          "Bryan-Lewis and internal tidal dissipation are both enabled. Choose one.")
 
   CS%useKappaShear = kappa_shear_init(Time, G, GV, US, param_file, CS%diag, CS%kappaShear_CSp)
-  CS%Vertex_Shear = kappa_shear_at_vertex(param_file)
+  KS_Vertex_Shear = kappa_shear_at_vertex(param_file)
 
   if (CS%useKappaShear) &
     id_clock_kappaShear = cpu_clock_id('(Ocean kappa_shear)', grain=CLOCK_MODULE)
+
+  ! GOTM
+  CS%useGOTM = GOTM_init(param_file, G, GV, diag, Time, CS%GOTM_CSp)
+  GOTM_Vertex_Shear = GOTM_at_vertex(param_file)
+
+  ! Kappa-Shear or GOTM at Vertex
+  CS%Vertex_Shear = (KS_Vertex_Shear .or. GOTM_Vertex_Shear)
 
   ! CVMix shear-driven mixing
   CS%use_CVMix_shear = CVMix_shear_init(Time, G, GV, US, param_file, CS%diag, CS%CVMix_shear_csp)
@@ -2353,6 +2380,9 @@ subroutine set_diffusivity_end(CS)
     call CVMix_shear_end(CS%CVMix_shear_CSp)
     deallocate(CS%CVMix_shear_CSp)
   endif
+
+  if (CS%useGOTM) call GOTM_end(CS%GOTM_CSp)
+  if (associated (CS%GOTM_CSp)) deallocate (CS%GOTM_CSp)
 
   ! NOTE: CS%kappaShear_CSp is always allocated, even if unused
   deallocate(CS%kappaShear_CSp)
