@@ -272,6 +272,12 @@ type, public :: vertvisc_type
   real, pointer, dimension(:,:,:) :: TKE_turb => NULL()
                 !< The turbulent kinetic energy per unit mass at the interfaces [Z2 T-2 ~> m2 s-2].
                 !! This may be at the tracer or corner points
+  real, pointer, dimension(:,:,:) :: TKE_diss => NULL()
+                !< The turbulent kinetic energy dissipation rate per unit mass at the interfaces [Z2 T-3 ~> m2 s-3].
+                !! This may be at the tracer or corner points
+  real, pointer, dimension(:,:,:) :: TKE_ML => NULL()
+                !< The turbulent mixing length at the interfaces [Z ~> m].
+                !! This may be at the tracer or corner points
 end type vertvisc_type
 
 !> Container for information about the summed layer transports

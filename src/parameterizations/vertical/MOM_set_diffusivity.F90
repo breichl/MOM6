@@ -381,11 +381,11 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, Kd_i
     Kd_tmp(:,:,:) = 0.0
     if (CS%Vertex_shear) then
       call GOTM_calculate_vertex(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
-           fluxes%ustar, visc%Kd_shear,Kd_tmp, visc%Kv_shear_Bu )
+           fluxes%ustar, visc%TKE_turb, visc%TKE_diss, visc%TKE_ML, visc%Kd_shear,Kd_tmp, visc%Kv_shear_Bu )
       if (associated(visc%Kv_shear)) visc%Kv_shear(:,:,:) = 0.0 ! needed for other parameterizations
     else
       call GOTM_calculate(CS%GOTM_CSp, G, GV, Dt, h, tv%T, tv%S, u, v, tv%eqn_of_state, &
-           fluxes%ustar, visc%Kd_shear, Kd_tmp, visc%Kv_shear )
+           fluxes%ustar, visc%TKE_turb, visc%TKE_diss, visc%TKE_ML, visc%Kd_shear, Kd_tmp, visc%Kv_shear )
     endif
   elseif (associated(visc%Kv_shear)) then
     visc%Kv_shear(:,:,:) = 0.0 ! needed if calculate_kappa_shear is not enabled

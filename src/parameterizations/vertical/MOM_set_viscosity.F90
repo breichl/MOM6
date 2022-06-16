@@ -1863,7 +1863,7 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
     call register_restart_field(visc%Kv_shear, "Kv_shear", .false., restart_CS, &
                   "Shear-driven turbulent viscosity at interfaces", "m2 s-1", z_grid='i')
   endif
-  if ( (use_kappa_shear .and. KS_at_vertex).or.(useGOTM .and. GOTM_is_vertex) ) then
+  if (use_kappa_shear .and. KS_at_vertex) then
     call safe_alloc_ptr(visc%TKE_turb, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)
     call safe_alloc_ptr(visc%Kv_shear_Bu, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)
     call register_restart_field(visc%Kv_shear_Bu, "Kv_shear_Bu", .false., restart_CS, &
@@ -1872,7 +1872,52 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
   elseif (use_kappa_shear) then
     call safe_alloc_ptr(visc%TKE_turb, isd, ied, jsd, jed, nz+1)
   endif
+  !if (useGOTM .and. GOTM_is_vertex ) then
+  !  call safe_alloc_ptr(visc%TKE_turb, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)
+  !  visc%TKE_turb = 1.0e-8 ! reasonable value?
+  !  call register_restart_field(visc%TKE_turb, "TKE_turb", .false., restart_CS, &
+  !                "Turbulent Kinetic Energy at vertex interfaces", "m2 s-2", &
+  !                hor_grid="Bu", z_grid='i')
+  !
+  !  call safe_alloc_ptr(visc%TKE_diss, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)
+  !  visc%TKE_diss(:,:,:) = 1.0e-12
+  !  if (useGOTM) then
+  !    call register_restart_field(visc%TKE_diss, "TKE_diss", .false., restart_CS, &
+  !                "Turbulent Kinetic Energy dissipation rate at vertex interfaces", "m2 s-2", &
+  !                hor_grid="Bu", z_grid='i')
+  !  endif
+  !  call safe_alloc_ptr(visc%TKE_ML, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)
+  !  visc%TKE_ML(:,:,:) = 0.0
+  !  if (useGOTM) then
+  !    call register_restart_field(visc%TKE_ML, "TKE_ML", .false., restart_CS, &
+  !                "Turbulent mixing length at vertex interfaces", "m", &
+  !                hor_grid="Bu", z_grid='i')
+  !  endif
+  if (useGOTM) then
+     !if (GOTM_TKE_AT T)
+    call safe_alloc_ptr(visc%TKE_diss, isd, ied, jsd, jed, nz+1)
+    visc%TKE_diss(:,:,:) = 1.0e-12
+    call register_restart_field(visc%TKE_diss, "TKE_diss", .false., restart_CS, &
+                  "Turbulent Kinetic Energy dissipation rate at cell interfaces", "m2 s-3", &
+                  z_grid='i')
 
+    call safe_alloc_ptr(visc%TKE_ML, isd, ied, jsd, jed, nz+1)
+    visc%TKE_ML(:,:,:) = 0.0
+    call register_restart_field(visc%TKE_ML, "TKE_ML", .false., restart_CS, &
+                  "Turbulent mixing length at cell interfaces", "m", &
+                  z_grid='i')
+    call safe_alloc_ptr(visc%TKE_turb, isd, ied, jsd, jed, nz+1)
+    visc%TKE_turb = 1.0e-10 ! reasonable value?
+    call register_restart_field(visc%TKE_turb, "TKE_turb", .false., restart_CS, &
+                  "Turbulent Kinetic Energy at vertex interfaces", "m2 s-2", &
+                  z_grid='i')
+    if (GOTM_is_vertex) then
+      call safe_alloc_ptr(visc%Kv_shear_Bu, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)
+      call register_restart_field(visc%Kv_shear_Bu, "Kv_shear_Bu", .false., restart_CS, &
+                  "Shear-driven turbulent viscosity at vertex interfaces", "m2 s-1", &
+                  hor_grid="Bu", z_grid='i')
+    endif
+  endif
   if (useKPP) then
     ! MOM_bkgnd_mixing uses Kv_slow when KPP is defined.
     call safe_alloc_ptr(visc%Kv_slow, isd, ied, jsd, jed, nz+1)

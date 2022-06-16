@@ -1525,7 +1525,7 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
         do i=is,ie
           CS%surfbuoyflux(i,j) = SkinBuoyFlux(i,j)
         enddo
-      elseif (CS%id_surfbuoyflux<0.) then
+      elseif (CS%id_surfbuoyflux>0) then
         do i=is,ie
           CS%surfbuoyflux(i,j) = - GoRho * GV%H_to_Z * &
                                    (dRhodS(i) * (netSalt_rate(i) - tv%S(i,j,1)*netMassInOut_rate(i)) + &
