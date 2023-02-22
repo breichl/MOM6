@@ -1798,6 +1798,7 @@ subroutine find_mstar(CS, US, Buoyancy_Flux, UStar, UStar_Mean,&
     MStar_S = CS%RH18_MStar_CS1 * ( max(0.0, Buoyancy_Flux)**2 * BLD / &
              ( UStar**5 * max(Abs_Coriolis,1.e-20*US%T_to_s) ) )**CS%RH18_mstar_cs2
     MStar = MStar_N + MStar_S
+    if (CS%MStar_Cap > 0.0) MStar = min( CS%MStar_Cap,MStar )
   endif
 
   !/ 2. Adjust mstar to account for convective turbulence
