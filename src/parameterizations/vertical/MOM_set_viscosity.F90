@@ -1871,6 +1871,7 @@ subroutine set_visc_register_restarts(HI, GV, param_file, visc, restart_CS)
                   hor_grid="Bu", z_grid='i')
   elseif (use_kappa_shear) then
     call safe_alloc_ptr(visc%TKE_turb, isd, ied, jsd, jed, nz+1)
+    visc%TKE_turb = 0.0
   endif
   !if (useGOTM .and. GOTM_is_vertex ) then
   !  call safe_alloc_ptr(visc%TKE_turb, HI%IsdB, HI%IedB, HI%JsdB, HI%JedB, nz+1)

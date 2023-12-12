@@ -139,6 +139,9 @@ use MOM_verticalGrid,          only : get_thickness_units, get_flux_units, get_t
 use MOM_wave_interface,        only : wave_parameters_CS, waves_end
 use MOM_wave_interface,        only : Update_Stokes_Drift
 
+use SCM_column_forcing, only : SCM_column_forcing_init, SCM_column_forcing_CS, SCM_column_forcing_calculate
+use SCM_column_forcing, only : SCM_column_forcing_apply_thermo, SCM_column_forcing_apply_dynamics
+
 use MOM_porous_barriers,      only : porous_widths
 
 ! ODA modules
@@ -273,6 +276,7 @@ type, public :: MOM_control_struct ; private
   logical :: mixedlayer_restrat      !< If true, use submesoscale mixed layer restratifying scheme.
   logical :: useMEKE                 !< If true, call the MEKE parameterization.
   logical :: useWaves                !< If true, update Stokes drift
+  logical :: use_column_forces       !< If true 1d tendencies can be added in the vertical from files
   logical :: use_p_surf_in_EOS       !< If true, always include the surface pressure contributions
                                      !! in equation of state calculations.
   logical :: use_diabatic_time_bug   !< If true, uses the wrong calendar time for diabatic processes,
@@ -389,7 +393,9 @@ type, public :: MOM_control_struct ; private
     !< Pointer to the ALE-mode sponge control structure
   type(ALE_CS),                  pointer :: ALE_CSp => NULL()
     !< Pointer to the Arbitrary Lagrangian Eulerian (ALE) vertical coordinate control structure
-
+  type(SCM_column_forcing_CS), pointer :: column_forces_CSp
+    !< Pointer to the SCM column forcing control structure
+  
   ! Pointers to control structures used for diagnostics
   type(sum_output_CS),           pointer :: sum_output_CSp => NULL()
     !< Pointer to the globally summed output control structure
@@ -598,6 +604,13 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
     endif
   endif
 
+  if (CS%use_column_forces) then
+    call enable_averages(cycle_time, Time_start + real_to_time(US%T_to_s*cycle_time), CS%diag)
+    call SCM_column_forcing_calculate(Time_start, CS%G, CS%GV, CS%US, &
+                                      CS%column_forces_CSp,CS%h, cycle_time)
+    call disable_averaging(CS%diag)
+  endif
+  
   ! First determine the time step that is consistent with this call and an
   ! integer fraction of time_interval.
   if (do_dyn) then
@@ -770,6 +783,9 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
       ! Apply diabatic forcing, do mixing, and regrid.
       call step_MOM_thermo(CS, G, GV, US, u, v, h, CS%tv, fluxes, dtdia, &
                            end_time_thermo, .true., Waves=Waves)
+      if (CS%use_column_forces) then
+        call SCM_column_forcing_apply_thermo(G,GV,CS%tv,CS%column_forces_CSp,dtdia)
+      endif
       CS%time_in_thermo_cycle = CS%time_in_thermo_cycle + dtdia
 
       ! The diabatic processes are now ahead of the dynamics by dtdia.
@@ -1184,6 +1200,12 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
 
   if (CS%useMEKE) call step_forward_MEKE(CS%MEKE, h, CS%VarMix%SN_u, CS%VarMix%SN_v, &
                                          CS%visc, dt, G, GV, US, CS%MEKE_CSp, CS%uhtr, CS%vhtr)
+
+  if (CS%use_column_forces) then
+    call SCM_column_forcing_apply_dynamics(G,GV,u,v,CS%column_forces_CSp,dt)
+  endif
+
+
   call disable_averaging(CS%diag)
 
   ! Advance the dynamics time by dt.
@@ -2171,7 +2193,9 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  "HOMOGENIZE_FORCINGS option.  Note that this will not work "//&
                  "with a non-zero gustiness factor.", default=.false., &
                  do_not_log=.not.CS%homogenize_forcings)
-
+  call get_param(param_file, "MOM", "COLUMN_FORCING", CS%use_column_forces, &
+                 "If true, column forcings are enabled.",default=.false.)
+  
   ! Grid rotation test
   call get_param(param_file, "MOM", "ROTATE_INDEX", CS%rotate_index, &
       "Enable rotation of the horizontal indices.", default=.false., &
@@ -2729,6 +2753,11 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
   call set_visc_init(Time, G, GV, US, param_file, diag, CS%visc, CS%set_visc_CSp, restart_CSp, CS%OBC)
   call thickness_diffuse_init(Time, G, GV, US, param_file, diag, CS%CDp, CS%thickness_diffuse_CSp)
 
+  if (CS%use_column_forces) then
+    call SCM_column_forcing_init(Time, CS%G, CS%GV, CS%US, param_file, CS%column_forces_CSp, diag)
+  endif
+
+  
   if (CS%split) then
     allocate(eta(SZI_(G),SZJ_(G)), source=0.0)
     call initialize_dyn_split_RK2(CS%u, CS%v, CS%h, CS%uh, CS%vh, eta, Time, &
