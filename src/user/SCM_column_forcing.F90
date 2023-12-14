@@ -20,6 +20,7 @@ use MOM_time_manager, only : time_type, operator(+), operator(/), real_to_time
 use MOM_unit_scaling,  only : unit_scale_type
 use MOM_verticalGrid, only : verticalGrid_type
 use MOM_variables,             only : thermo_var_ptrs
+use MOM_domains,              only : pass_var, pass_vector
 
 implicit none ; private
 
@@ -320,7 +321,6 @@ subroutine SCM_column_forcing_calculate(Time, G, GV, US, CS, h, dt)
   if (CS%apply_tendency_ucur) call time_interp_external(CS%file_ID_ucur,Time_center,CS%dU_dt_input)
   if (CS%apply_tendency_vcur) call time_interp_external(CS%file_ID_vcur,Time_center,CS%dV_dt_input)
 
-
   ! Map tendencies to model grid
     ! Uses a simple interpolation (could be done fancier?)
   ! Need dimensional rescaling.
@@ -348,7 +348,7 @@ subroutine SCM_column_forcing_calculate(Time, G, GV, US, CS, h, dt)
             klo_weight(k) = (zc-zu_input)/(zl_input-zu_input)
             kup_weight(k) = (zl_input-zc)/(zl_input-zu_input)
           else
-kup(k) = 1 !This could be anything, but this is valid.
+             kup(k) = 1 !This could be anything, but this is valid.
             kup_weight(k) = 0.0
             klo(k) = 1
             klo_weight(k) = 1.0
@@ -518,6 +518,9 @@ subroutine SCM_column_forcing_apply_thermo(G, GV, tv, CS, dt)
     enddo; enddo
   endif
 
+  call pass_var(tv%S,G%domain)
+  call pass_var(tv%T,G%domain)
+
 end subroutine SCM_column_forcing_apply_thermo
 
 !> This subroutine applys a column "forcing" acceleration on u and v currents, if activated.
@@ -533,6 +536,7 @@ subroutine SCM_column_forcing_apply_dynamics(G, GV, u, v, CS, dt)
 
   real :: maxinc, inc
   integer :: i, j, k
+
 
   if (CS%apply_tendency_ucur) then
     maxinc=0.0
@@ -555,6 +559,8 @@ subroutine SCM_column_forcing_apply_dynamics(G, GV, u, v, CS, dt)
       enddo
     enddo; enddo
   endif
+
+  call pass_vector(u, v, G%Domain)
 
 end subroutine SCM_column_forcing_apply_dynamics
 

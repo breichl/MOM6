@@ -610,7 +610,7 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
                                       CS%column_forces_CSp,CS%h, cycle_time)
     call disable_averaging(CS%diag)
   endif
-  
+
   ! First determine the time step that is consistent with this call and an
   ! integer fraction of time_interval.
   if (do_dyn) then
@@ -888,6 +888,9 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
       ! Apply diabatic forcing, do mixing, and regrid.
       call step_MOM_thermo(CS, G, GV, US, u, v, h, CS%tv, fluxes, dtdia, &
                            Time_local, .false., Waves=Waves)
+      if (CS%use_column_forces) then
+        call SCM_column_forcing_apply_thermo(G,GV,CS%tv,CS%column_forces_CSp,dtdia)
+      endif
       CS%time_in_thermo_cycle = CS%time_in_thermo_cycle + dtdia
 
       if ((CS%t_dyn_rel_thermo==0.0) .and. .not.do_dyn) then
@@ -1204,7 +1207,6 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
   if (CS%use_column_forces) then
     call SCM_column_forcing_apply_dynamics(G,GV,u,v,CS%column_forces_CSp,dt)
   endif
-
 
   call disable_averaging(CS%diag)
 
@@ -2195,7 +2197,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
                  do_not_log=.not.CS%homogenize_forcings)
   call get_param(param_file, "MOM", "COLUMN_FORCING", CS%use_column_forces, &
                  "If true, column forcings are enabled.",default=.false.)
-  
+
   ! Grid rotation test
   call get_param(param_file, "MOM", "ROTATE_INDEX", CS%rotate_index, &
       "Enable rotation of the horizontal indices.", default=.false., &
@@ -2757,7 +2759,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
     call SCM_column_forcing_init(Time, CS%G, CS%GV, CS%US, param_file, CS%column_forces_CSp, diag)
   endif
 
-  
+
   if (CS%split) then
     allocate(eta(SZI_(G),SZJ_(G)), source=0.0)
     call initialize_dyn_split_RK2(CS%u, CS%v, CS%h, CS%uh, CS%vh, eta, Time, &
