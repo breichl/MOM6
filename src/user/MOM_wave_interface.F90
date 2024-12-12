@@ -567,7 +567,7 @@ subroutine MOM_wave_interface_init(time, G, GV, US, param_file, CS, diag)
   allocate(CS%US0_x(G%isdB:G%iedB,G%jsd:G%jed), source=0.0)
   allocate(CS%US0_y(G%isd:G%ied,G%jsdB:G%jedB), source=0.0)
   ! c. Langmuir number
-  allocate(CS%La_turb(G%isc:G%iec,G%jsc:G%jec), source=0.0)
+  allocate(CS%La_turb(G%isd:G%ied,G%jsd:G%jed), source=0.0)
   ! d. Viscosity for Stokes drift
   if (CS%StokesMixing) then
     allocate(CS%KvS(G%isd:G%Ied,G%jsd:G%jed,GV%ke), source=0.0)
