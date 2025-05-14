@@ -204,6 +204,8 @@ type, public :: ice_ocean_boundary_type
   real, pointer, dimension(:)     :: stk_wavenumbers => NULL() !<
   real, pointer, dimension(:,:,:) :: ustkb           => NULL() !<
   real, pointer, dimension(:,:,:) :: vstkb           => NULL() !<
+  real, pointer, dimension(:,:)   :: ustktail        => NULL() !<
+  real, pointer, dimension(:,:)   :: vstktail        => NULL() !<
 
   integer :: xtype                    !< The type of the exchange - REGRID, REDIST or DIRECT
   type(coupler_2d_bc_type) :: fluxes  !< A structure that may contain an array of named fields
