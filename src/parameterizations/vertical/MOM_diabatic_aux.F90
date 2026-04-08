@@ -73,13 +73,15 @@ type, public :: diabatic_aux_CS ; private
   integer :: brine_plume_n   !< The exponent in the brine plume parameterization.
   real :: plume_strength     !< Fraction of the available brine to take to the bottom of the mixed
                              !! layer [nondim].
+  real :: plume_mld_fac      !< Proportionality factor between the mixed/mixing layer depth and the
+                             !! vertical scale used for the brine plume parameterization [nondim].
 
   type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock.
   type(diag_ctrl), pointer :: diag !< Structure used to regulate timing of diagnostic output
 
   ! Diagnostic handles
   integer :: id_createdH       = -1 !< Diagnostic ID of mass added to avoid grounding
-  integer :: id_brine_lay      = -1 !< Diagnostic ID of which layer receives the brine
+  integer :: id_brine_input    = -1 !< Diagnostic ID of which layer receives the brine salt flux
   integer :: id_penSW_diag     = -1 !< Diagnostic ID of Penetrative shortwave heating (flux convergence)
   integer :: id_penSWflux_diag = -1 !< Diagnostic ID of Penetrative shortwave flux
   integer :: id_nonpenSW_diag  = -1 !< Diagnostic ID of Non-penetrative shortwave heating
@@ -88,6 +90,8 @@ type, public :: diabatic_aux_CS ; private
   ! Optional diagnostic arrays
   real, allocatable, dimension(:,:)   :: createdH       !< The amount of volume added in order to
                                                         !! avoid grounding [H T-1 ~> m s-1]
+  real, allocatable, dimension(:,:,:) :: brine_input    !< Brine input diagnostic indicating
+                                                        !! the resulting salt tendency [S T-1 ~> ppt s-1]
   real, allocatable, dimension(:,:,:) :: penSW_diag     !< Heating in a layer from convergence of
                                                         !! penetrative SW [Q R Z T-1 ~> W m-2]
   real, allocatable, dimension(:,:,:) :: penSWflux_diag !< Penetrative SW flux at base of grid
@@ -992,7 +996,7 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
       do i=is,ie ; total_h(i) = 0.0 ; enddo
       do k=1,nz ; do i=is,ie ; total_h(i) = total_h(i) + h(i,j,k) ; enddo ; enddo
       do i=is,ie
-        mixing_depth(i) = min( max(MLD_h(i,j) - minimum_forcing_depth, minimum_forcing_depth), &
+        mixing_depth(i) = min( max(CS%plume_mld_fac * MLD_h(i,j) - minimum_forcing_depth, minimum_forcing_depth), &
                                max(total_h(i), GV%angstrom_h) ) + GV%H_subroundoff
         A_brine(i) = (CS%brine_plume_n + 1) / (mixing_depth(i) ** (CS%brine_plume_n + 1))
       enddo
@@ -1094,6 +1098,7 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
               ! Place forcing into this layer by depth for brine plume parameterization.
               if (k == 1) then
                 dK(i) = 0.5 * h(i,j,k)         ! Depth of center of layer K
+                ! salt_left_behind has units of R Z T-1, plume flux thus has units of S H T-1
                 plume_flux = - (1000.0*US%ppt_to_S * (CS%plume_strength * fluxes%salt_left_behind(i,j))) * GV%RZ_to_H
                 plume_fraction = 1.0
               else
@@ -1159,7 +1164,10 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
             endif
             Ithickness  = 1.0/h2d(i,k) ! Inverse of new thickness
             T2d(i,k)    = (hOld*T2d(i,k) + dTemp)*Ithickness
-            tv%S(i,j,k) = (hOld*tv%S(i,j,k) + dSalt + plume_flux)*Ithickness
+            tv%S(i,j,k) = (hOld*tv%S(i,j,k) + dSalt + plume_flux*dt)*Ithickness
+            if (CS%id_brine_input > 0.) then
+              CS%brine_input(i,j,k) = plume_flux!*Ithickness
+            endif
           elseif (h2d(i,k) < 0.0) then ! h2d==0 is a special limit that needs no extra handling
             call forcing_SinglePointPrint(fluxes,G,i,j,'applyBoundaryFluxesInOut (h<0)')
             write(0,*) 'applyBoundaryFluxesInOut(): lon,lat=',G%geoLonT(i,j),G%geoLatT(i,j)
@@ -1322,6 +1330,7 @@ subroutine applyBoundaryFluxesInOut(CS, G, GV, US, dt, fluxes, optics, nsw, h, t
 
   ! Post the diagnostics
   if (CS%id_createdH       > 0) call post_data(CS%id_createdH      , CS%createdH      , CS%diag)
+  if (CS%id_brine_input    > 0) call post_data(CS%id_brine_input   , CS%brine_input   , CS%diag)
   if (CS%id_penSW_diag     > 0) call post_data(CS%id_penSW_diag    , CS%penSW_diag    , CS%diag)
   if (CS%id_penSWflux_diag > 0) call post_data(CS%id_penSWflux_diag, CS%penSWflux_diag, CS%diag)
   if (CS%id_nonpenSW_diag  > 0) call post_data(CS%id_nonpenSW_diag , CS%nonpenSW_diag , CS%diag)
@@ -1450,12 +1459,22 @@ subroutine diabatic_aux_init(Time, G, GV, US, param_file, diag, CS, useALEalgori
   call get_param(param_file, mdl, "BRINE_PLUME_FRACTION", CS%plume_strength, &
                  "Fraction of the available brine to mix down using the brine plume parameterization.", &
                  units="nondim", default=1.0, do_not_log=.not.CS%do_brine_plume)
+  call get_param(param_file, mdl, "BRINE_PLUME_MLD_FAC", CS%plume_mld_fac, &
+                 "Proportionality factor between plume scale and  MLD used in brine plume parameteterization.", &
+                 units="nondim", default=1.0, do_not_log=.not.CS%do_brine_plume)
+  if (CS%plume_mld_fac<0.0) call MOM_error(FATAL,"BRINE_PLUME_MLD_FAC shouldn't be negative!")
+
 
   if (useALEalgorithm) then
     CS%id_createdH = register_diag_field('ocean_model',"created_H",diag%axesT1, &
         Time, "The volume flux added to stop the ocean from drying out and becoming negative in depth", &
         "m s-1", conversion=GV%H_to_m*US%s_to_T)
     if (CS%id_createdH>0) allocate(CS%createdH(isd:ied,jsd:jed))
+
+    CS%id_brine_input = register_diag_field('ocean_model', 'Brine_Salinity_Increment', &
+        diag%axesTL, Time, 'Salinity change due to brine plume','ppt',conversion=US%S_to_ppt)
+    if (CS%id_brine_input>0) allocate(CS%brine_input(isd:ied,jsd:jed,nz), source=0.0)
+
 
     ! diagnostic for heating of a grid cell from convergence of SW heat into the cell
     CS%id_penSW_diag = register_diag_field('ocean_model', 'rsdoabsorb',                     &
